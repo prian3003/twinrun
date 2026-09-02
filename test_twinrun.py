@@ -184,6 +184,11 @@ def main():
 
     assert rep.checked == 9, f"expected 9 callables twin-run, got {rep.checked}"
 
+    # Reaching the change is the whole chain -- hunk parse, payload, line trace,
+    # tally -- and any broken link in it reports zero.
+    assert 0 < rep.reached <= rep.probes, \
+        f"{rep.reached} probes reached the change, out of {rep.probes}"
+
     groups = cluster(rep.deltas)
     assert len(groups) < len(rep.deltas), "clustering collapsed nothing"
     per_name = {}
@@ -193,7 +198,8 @@ def main():
     assert per_name["discount"] == 1, f"one root cause split into {per_name['discount']} findings"
 
     print(f"ok  {len(groups)} findings from {len(rep.deltas)} deltas, "
-          f"{rep.probes} probes, {rep.flaky} flaky, {rep.checked} checked")
+          f"{rep.probes} probes ({rep.reached} reached), "
+          f"{rep.flaky} flaky, {rep.checked} checked")
     for g in groups:
         d = g[0]
         print(f"    {d.qualname:<14} {d.base['type']:>8} -> {d.head['type']:<8} ({len(g)} calls)")

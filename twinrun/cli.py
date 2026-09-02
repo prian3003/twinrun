@@ -49,7 +49,8 @@ def show(rep, base, head):
     checked = "%d callable%s checked" % (rep.checked, "" if rep.checked == 1 else "s")
     print(
         f"{paint(findings, RED if n else GREEN)} · {checked}"
-        f" · {rep.probes} probes · {rep.flaky} flaky dropped"
+        f" · {rep.probes} probes ({rep.reached} reached the change)"
+        f" · {rep.flaky} flaky dropped"
     )
     for name, why in rep.skipped:
         print(paint(f"  skipped {name}: {why}", YELLOW))

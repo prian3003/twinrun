@@ -2,9 +2,9 @@
 probes, write results to a file. Results never go to stdout -- the target may print.
 
 Protocol (stdin, JSON):
-    {root, file, qualname, kind, n_ctor, probes: [[argsrc, ...], ...], out}
+    {root, file, qualname, kind, n_ctor, lines, probes: [[argsrc, ...], ...], out}
 Output (file at `out`, JSON):
-    {"results": [...]} | {"error": "..."}
+    {"results": [...], "reached": [bool, ...]} | {"error": "..."}
 """
 
 import builtins
@@ -29,6 +29,26 @@ ROOTS = []
 # A default repr carries the object's address, which changes every run. Left in,
 # it makes every object-valued result look non-deterministic.
 ADDR = re.compile(r"(?<= at 0x)[0-9a-fA-F]+(?=>)")
+
+# The target file, and the lines in it the commit touched. A probe that calls the
+# changed callable without executing one of these ran the function, not the edit.
+TRACE = {"path": "", "lines": set()}
+
+
+def tracer(path: str, lines: set, seen: set):
+    """A trace function that watches one file. The global hook fires on every
+    call in the process, so it hands back a line tracer for frames belonging to
+    the target module and None for everything else, which leaves the rest of the
+    program running at full speed."""
+    def local(frame, event, arg):
+        if event == "line" and frame.f_lineno in lines:
+            seen.add(frame.f_lineno)
+        return local
+
+    def top(frame, event, arg):
+        return local if frame.f_code.co_filename == path else None
+
+    return top
 
 
 def cap(s):
@@ -81,10 +101,11 @@ def result(kind, value, type_name, stdout="", mutated=""):
 def call(mod, env, payload, argsrc):
     kind, qualname, n_ctor = payload["kind"], payload["qualname"], payload["n_ctor"]
     buf = io.StringIO()
+    seen = set()
     try:
         vals = [eval(a, env) for a in argsrc]
     except BaseException as e:
-        return result("probe-error", f"{type(e).__name__}: {e}", "probe-error")
+        return result("probe-error", f"{type(e).__name__}: {e}", "probe-error"), False
     ctor_args, args = vals[:n_ctor], vals[n_ctor:]
 
     owner = mod
@@ -105,12 +126,17 @@ def call(mod, env, payload, argsrc):
                 fn = getattr(owner, name)
     except BaseException as e:
         return result("setup-raise", f"{type(e).__name__}: {e}",
-                      type(e).__name__, buf.getvalue())
+                      type(e).__name__, buf.getvalue()), False
 
     before = [safe_repr(a) for a in args]
     try:
         with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
-            r = fn(*args)
+            if TRACE["lines"]:
+                sys.settrace(tracer(TRACE["path"], TRACE["lines"], seen))
+            try:
+                r = fn(*args)
+            finally:
+                sys.settrace(None)
         out = result("return", safe_repr(r), type(r).__name__, buf.getvalue())
     except BaseException as e:
         out = result("raise", f"{type(e).__name__}: {e}", type(e).__name__, buf.getvalue())
@@ -122,7 +148,7 @@ def call(mod, env, payload, argsrc):
     if inst is not None:
         marks.append("self=" + state_of(inst))
     out["mutated"] = cap(" ".join(marks))
-    return out
+    return out, bool(seen)
 
 
 def _ann(a):
@@ -199,8 +225,11 @@ def main():
             return
         env = dict(vars(mod))
         env["__builtins__"] = builtins
-        results = [call(mod, env, payload, a) for a in payload["probes"]]
-        out.write_text(json.dumps({"results": results}))
+        TRACE["path"] = str((root / payload["file"]).resolve())
+        TRACE["lines"] = set(payload.get("lines") or [])
+        runs = [call(mod, env, payload, a) for a in payload["probes"]]
+        out.write_text(json.dumps({"results": [r for r, _ in runs],
+                                   "reached": [h for _, h in runs]}))
     except BaseException as e:
         out.write_text(json.dumps({"error": f"{type(e).__name__}: {e}"}))
 

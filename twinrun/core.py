@@ -63,6 +63,7 @@ class Change:
     ctors: dict = field(default_factory=dict)   # local class -> __init__ params
     producers: dict = field(default_factory=dict)   # annotation -> call expressions
     built: list[str] = field(default_factory=list)  # constructions taken from the tests
+    lines: dict = field(default_factory=dict)   # side -> line numbers the commit touched
     skip: str | None = None
 
     @property
@@ -93,6 +94,7 @@ class Report:
     checked: int = 0        # callables actually twin-run
     probes: int = 0         # probes compared after the flake filter
     flaky: int = 0          # probes dropped as non-deterministic
+    reached: int = 0        # of those, probes that executed a line the commit touched
 
 
 def git(repo, *args, check=True):
@@ -434,6 +436,28 @@ def _head(expr: str) -> str:
     return expr.split("(")[0].split(".")[0]
 
 
+HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+
+
+def _hunks(repo, base, head, f: str) -> dict[str, list[int]]:
+    """The line numbers the commit touched in this file, per side.
+
+    Calling a changed callable is not the same as reaching the change inside it.
+    A probe that runs the function but never executes one of these lines could
+    not have been affected by the edit, and counting it as coverage overstates
+    what the sweep actually verified.
+    """
+    out = {"base": [], "head": []}
+    for line in git(repo, "diff", "-U0", base, head, "--", f, check=False).split("\n"):
+        m = HUNK.match(line)
+        if not m:
+            continue
+        bs, bn, hs, hn = (int(x) if x else 1 for x in m.groups())
+        out["base"].extend(range(bs, bs + bn))
+        out["head"].extend(range(hs, hs + hn))
+    return out
+
+
 def changed_functions(repo, base, head, include_tests: bool = False) -> list[Change]:
     """Callables present in both revisions whose AST differs.
 
@@ -522,9 +546,10 @@ def changed_functions(repo, base, head, include_tests: bool = False) -> list[Cha
             lit = [("fixture", e) for e in v]
             made[k] = lit[:2] + made.get(k, []) + lit[2:]
         made = {k: [e for _, e in v] for k, v in made.items()}
+        touched = _hunks(repo, base, head, f)
         for qual in hit + callers:
             ch = _describe(f, qual, *ht[qual], *bt[qual])
-            ch.ctors, ch.producers = ctors, made
+            ch.ctors, ch.producers, ch.lines = ctors, made, touched
             # A changed constructor anywhere disqualifies every harvested
             # construction: __init__ is resolved through inheritance, so the
             # one that moved is not always the one named on the class.
@@ -866,16 +891,23 @@ def _invoke(worktree: Path, payload: dict, timeout: float, tmp: Path):
     return data, None
 
 
-def run_side(worktree: Path, change: Change, probes, timeout: float, tmp: Path):
+def run_side(side: str, worktree: Path, change: Change, probes, timeout: float,
+             tmp: Path):
+    """Results for each probe, and whether each one executed a line the commit
+    touched. Reached-ness is kept out of the result dict: it is a property of the
+    run, not of the answer, and comparing it would report a delta of its own."""
     data, err = _invoke(worktree, {
         "file": change.file,
         "qualname": change.qualname,
         "kind": change.kind,
         "n_ctor": 1 if change.instances else len(change.ctor_params),
         "built": bool(change.instances),
+        "lines": change.lines.get(side, []),
         "probes": probes,
     }, timeout, tmp)
-    return (None, err) if data is None else (data["results"], None)
+    if data is None:
+        return None, None, err
+    return data["results"], data.get("reached") or [], None
 
 
 def signatures(worktree: Path, change: Change, timeout: float, tmp: Path):
@@ -949,15 +981,19 @@ def verify(repo, base, head, limit=24, timeout=20.0, seed=0, repeats=2,
                     rep.skipped.append((ch.qualname, why))
                     continue
 
-                runs = {}
+                runs, reached = {}, []
                 for side, wt in (("base", bw), ("head", hw)):
                     for i in range(repeats):
-                        r, err = run_side(wt, ch, probes, timeout, td)
+                        r, hit, err = run_side(side, wt, ch, probes, timeout, td)
                         if r is None:
                             rep.skipped.append((ch.qualname, f"{side}: {err}"))
                             runs = None
                             break
                         runs[side, i] = r
+                        # Either side reaching the edit is coverage of it: a probe
+                        # can run the removed lines and not the added ones.
+                        reached = [a or b for a, b in
+                                   itertools.zip_longest(reached, hit, fillvalue=False)]
                     if runs is None:
                         break
                 if runs is None:
@@ -979,6 +1015,8 @@ def verify(repo, base, head, limit=24, timeout=20.0, seed=0, repeats=2,
                         rep.flaky += 1
                         continue
                     rep.probes += 1
+                    if i < len(reached) and reached[i]:
+                        rep.reached += 1
                     if bs[0] != hs[0]:
                         rep.deltas.append(Delta(
                             ch.file, ch.qualname, args, bs[0], hs[0], ch.kind,
