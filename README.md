@@ -43,8 +43,9 @@ Exits 1 when there is a finding, 2 on a usage error, so it drops into CI as-is.
    resolve a string annotation; all three are ordinary in real code.
 3. **Producers** — a corpus of edge values cannot build a signed token or a parsed
    config, but the module that consumes one usually contains the function that
-   makes one. Module functions with a return annotation are called to fill
-   parameters of that type. Anything that changed is excluded, directly or by
+   makes one. Module functions and instance methods with a return annotation are
+   called to fill parameters of that type; a method's instance is built the same
+   one-level way a project-typed parameter is. Anything that changed is excluded, directly or by
    reference: a producer whose own behaviour moved would hand the two sides
    different inputs, and then nothing being compared means anything.
 4. **Probes** — build inputs from each parameter's type, using a small
@@ -132,12 +133,14 @@ test suite you would already run.
 The probe corpus is fixed, beyond what the module's own producers add. It finds
 changes that a boring edge value or a freshly produced one reaches, and misses
 changes that need a specific *state* -- a token that is signed and also expired,
-a connection that is open and also stale. Constructor synthesis stops
+a connection that is open and also stale. Producers are matched on the
+annotation as written, so a producer returning `bytes` does not fill a parameter
+annotated `str | bytes`. Constructor synthesis stops
 at one level: a class whose `__init__` wants another project type falls back to a
 no-argument call. Caller propagation stops at one level too, and matches by name
 within a file rather than resolving the call graph.
 
-`sandbox.py` builds a repository whose answers are known — fifteen commits a
+`sandbox.py` builds a repository whose answers are known — sixteen commits a
 reviewer would wave through, some of which quietly change behaviour — and scores
 a sweep against them, including the cases that are meant to stay silent:
 

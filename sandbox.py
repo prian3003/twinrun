@@ -72,6 +72,17 @@ class Cart:
         if not self.lines:
             return 0
         return sum(self.lines) + self.rate
+
+
+class Ledger:
+    def __init__(self, tag: str):
+        self.tag = tag
+
+    def encode(self, amount: int) -> str:
+        return "%s:%d" % (self.tag, amount)
+
+    def decode(self, row: str) -> int:
+        return int(row.split(":")[-1])
 ''',
 }
 
@@ -204,6 +215,12 @@ STEPS = [
     ("fix: apply the minimum fee as a ceiling", "find", [
         ("shop/pricing.py", "    return max(amount // 10, minimum)",
          "    return min(amount // 10, minimum)"),
+    ]),
+    # No corpus string contains a colon, so every edge value fails identically on
+    # both sides. This is only visible to a probe built by calling encode().
+    ("refactor: read the ledger field from the front", "find", [
+        ("shop/cart.py", '        return int(row.split(":")[-1])',
+         '        return int(row.split(":")[0])'),
     ]),
     ("chore: widen the order id", "flaky", [
         ("shop/token.py",

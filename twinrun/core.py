@@ -308,7 +308,7 @@ def changed_functions(repo, base, head, include_tests: bool = False) -> list[Cha
                    if q not in hit and _refs(ht[q][0]) & tails][:CALLER_LIMIT]
 
         moved = set(hit) | {q.rsplit(".", 1)[-1] for q in hit}
-        made = _producers(h, moved)
+        made = _producers(h, moved, ctors)
         for qual in hit + callers:
             ch = _describe(f, qual, *ht[qual], *bt[qual])
             ch.ctors, ch.producers = ctors, made
@@ -349,7 +349,29 @@ def _corpus_typed(ann: str) -> bool:
     return any(n.lower() in CORPUS for n in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", ann))
 
 
-def _producers(src: str, exclude: set[str], per_type: int = 2) -> dict[str, list[str]]:
+def _produced(out, ann, expr, per_type):
+    got = out.setdefault(ann, [])
+    if len(got) < per_type:
+        got.append(expr)
+
+
+def _args_from(params, drop_first: bool):
+    """Corpus arguments for a producer's own parameters, or None if one of them
+    needs a type the corpus cannot fill -- a producer is only worth calling when
+    calling it is trivial."""
+    args = []
+    for pname, pann in params[1:] if drop_first else params:
+        if not _corpus_typed(pann):
+            return None
+        vals = _values(pann)
+        if not vals:
+            return None
+        args.append(vals[0])
+    return args
+
+
+def _producers(src: str, exclude: set[str], ctors: dict | None = None,
+               per_type: int = 2) -> dict[str, list[str]]:
     """Module functions that make a value of some type, as call expressions.
 
     A corpus of edge values cannot build a signed token, a parsed config or an
@@ -366,24 +388,37 @@ def _producers(src: str, exclude: set[str], per_type: int = 2) -> dict[str, list
         return {}
     out = {}
     for n in tree.body:
-        if not isinstance(n, ast.FunctionDef) or n.returns is None:
-            continue
-        if n.name in exclude or _bad_sig(n) or _refs(n) & exclude:
-            continue
-        ann = ast.unparse(n.returns)
-        if ann in CORPUS and len(out.get(ann, [])) >= per_type:
-            continue
-        args = []
-        for pname, pann in _sig_params(n, False):
-            if not _corpus_typed(pann):
-                break
-            vals = _values(pann)
-            if not vals:
-                break
-            args.append(vals[0])
-        else:
-            out.setdefault(ann, []).append("%s(%s)" % (n.name, ", ".join(args)))
-    return {k: v[:per_type] for k, v in out.items()}
+        if isinstance(n, ast.FunctionDef):
+            if n.returns is None or n.name in exclude:
+                continue
+            if _bad_sig(n) or _refs(n) & exclude:
+                continue
+            args = _args_from(_sig_params(n, False), False)
+            if args is not None:
+                _produced(out, ast.unparse(n.returns),
+                          "%s(%s)" % (n.name, ", ".join(args)), per_type)
+
+        # Most real code puts the producer on the same class as the consumer:
+        # loads takes what dumps made. Reaching those needs an instance, which
+        # is the same one-level construction a project-typed parameter gets.
+        elif isinstance(n, ast.ClassDef) and ctors:
+            if n.name not in ctors or f"{n.name}.__init__" in exclude:
+                continue
+            inst = _ctor_exprs(n.name, ctors, limit=1)[0]
+            for m in n.body:
+                if not isinstance(m, ast.FunctionDef) or m.returns is None:
+                    continue
+                if m.decorator_list or m.name.startswith("__"):
+                    continue
+                if f"{n.name}.{m.name}" in exclude or m.name in exclude:
+                    continue
+                if _bad_sig(m) or _refs(m) & exclude:
+                    continue
+                args = _args_from(_sig_params(m, False), True)
+                if args is not None:
+                    _produced(out, ast.unparse(m.returns),
+                              "%s.%s(%s)" % (inst, m.name, ", ".join(args)), per_type)
+    return out
 
 
 def _values(ann: str, ctors: dict | None = None,
