@@ -26,6 +26,14 @@ def jitter(n: int) -> int:
     return n + random.random()
 
 
+def area(w: int) -> int:
+    return w * w
+
+
+def scale(x: int) -> int:
+    return x * 2
+
+
 class Cart:
     def __init__(self, rate: int):
         self.rate = rate
@@ -55,6 +63,14 @@ def slug(name: str) -> str:
 def jitter(n: int) -> int:
     import random
     return n + random.random() * 2               # non-deterministic
+
+
+def area(w: int, h: int = 2) -> int:              # appended an optional parameter
+    return w * h                                  # ...and the one-arg answer moved
+
+
+def scale(x: int, factor: int) -> int:            # appended a required parameter
+    return x * factor
 
 
 class Cart:
@@ -112,13 +128,23 @@ def main():
     assert add.base["value"] == add.head["value"] == "None"
     assert add.base["mutated"] != add.head["mutated"], "state change not recorded"
 
+    # head appended an optional parameter: the old call still has an answer, and
+    # the answer changed
+    assert "area" in hit, f"missed a change behind an appended default; found {hit}"
+
+    # head appended a required parameter: there is no identical-input comparison
+    # left to make, and the change is already visible in the diff
+    assert "scale" not in hit, "arity change reported as a behaviour delta"
+    assert "signature changed" in skipped.get("scale", ""), \
+        f"scale should be skipped as a signature change, got {skipped.get('scale')!r}"
+
     # things that must stay quiet
     assert "slug" not in hit, "equivalent rewrite reported as a delta"
     assert "jitter" not in hit, "non-deterministic function reported as a delta"
     assert rep.flaky > 0, "flake filter never fired on a random() function"
     assert "Cart.__init__" in skipped, "constructor should be skipped with a reason"
 
-    assert rep.checked == 6, f"expected 6 callables twin-run, got {rep.checked}"
+    assert rep.checked == 7, f"expected 7 callables twin-run, got {rep.checked}"
 
     groups = cluster(rep.deltas)
     assert len(groups) < len(rep.deltas), "clustering collapsed nothing"

@@ -129,12 +129,49 @@ def _sig_params(node, drop_first: bool):
     return [(a.arg, ast.unparse(a.annotation) if a.annotation else "") for a in args]
 
 
+def _init_of(cls_node):
+    if cls_node is None:
+        return None
+    return next((m for m in cls_node.body
+                 if isinstance(m, ast.FunctionDef) and m.name == "__init__"), None)
+
+
+def _sig_msg(base_node, head_node, drop_first) -> str:
+    b = _fmt(_sig_params(base_node, drop_first))
+    h = _fmt(_sig_params(head_node, drop_first))
+    return f"signature changed: ({b}) -> ({h})"
+
+
 def _bad_sig(node) -> bool:
     a = node.args
     return bool(a.vararg or a.kwarg or a.kwonlyargs)
 
 
-def _describe(file: str, qualname: str, node, cls_node) -> Change:
+def _names(params):
+    return [n for n, _ in params]
+
+
+def _fmt(params):
+    return ", ".join(_names(params))
+
+
+def _reconcile(base_params, head_params, head_defaults):
+    """The parameter list both revisions can be called with, or None.
+
+    A signature change is already visible in the diff, so it is not the hidden
+    behaviour change this tool exists to find. What matters is whether the old
+    calls still do the old thing. When head only appends optional parameters,
+    that question still has an answer: call both sides with the old list.
+    """
+    if _names(base_params) == _names(head_params):
+        return head_params
+    added = len(head_params) - len(base_params)
+    if 0 < added <= head_defaults and _names(head_params[:len(base_params)]) == _names(base_params):
+        return head_params[:len(base_params)]
+    return None
+
+
+def _describe(file: str, qualname: str, node, cls_node, base_node, base_cls) -> Change:
     name = qualname.rsplit(".", 1)[-1]
     if isinstance(node, ast.AsyncFunctionDef):
         return Change(file, qualname, skip="async")
@@ -143,9 +180,13 @@ def _describe(file: str, qualname: str, node, cls_node) -> Change:
     if cls_node is None:
         if decs:
             return Change(file, qualname, skip=f"decorated ({', '.join(sorted(decs))})")
-        if _bad_sig(node):
+        if _bad_sig(node) or _bad_sig(base_node):
             return Change(file, qualname, skip="*args/**kwargs/keyword-only")
-        return Change(file, qualname, params=_sig_params(node, False))
+        params = _reconcile(_sig_params(base_node, False), _sig_params(node, False),
+                            len(node.args.defaults))
+        if params is None:
+            return Change(file, qualname, skip=_sig_msg(base_node, node, False))
+        return Change(file, qualname, params=params)
 
     if name in ("__init__", "__new__"):
         # Observed indirectly: a changed constructor shows up in every method's
@@ -154,23 +195,35 @@ def _describe(file: str, qualname: str, node, cls_node) -> Change:
     unknown = decs - DECOR_OK
     if unknown:
         return Change(file, qualname, skip=f"decorated ({', '.join(sorted(unknown))})")
-    if _bad_sig(node):
+    if _bad_sig(node) or _bad_sig(base_node):
         return Change(file, qualname, skip="*args/**kwargs/keyword-only")
-    if "staticmethod" in decs:
-        return Change(file, qualname, kind="static", params=_sig_params(node, False))
-    if "classmethod" in decs:
-        return Change(file, qualname, kind="classmethod", params=_sig_params(node, True))
+    if decs & DECOR_OK:
+        drop = "classmethod" in decs
+        params = _reconcile(_sig_params(base_node, drop), _sig_params(node, drop),
+                            len(node.args.defaults))
+        if params is None:
+            return Change(file, qualname, skip=_sig_msg(base_node, node, drop))
+        kind = "classmethod" if drop else "static"
+        return Change(file, qualname, kind=kind, params=params)
 
-    init = next(
-        (m for m in cls_node.body
-         if isinstance(m, ast.FunctionDef) and m.name == "__init__"),
-        None,
-    )
-    if init is not None and _bad_sig(init):
+    h_init, b_init = _init_of(cls_node), _init_of(base_cls)
+    if (h_init is not None and _bad_sig(h_init)) or (b_init is not None and _bad_sig(b_init)):
         return Change(file, qualname, skip=f"{cls_node.name}.__init__ takes *args/**kwargs")
-    ctor = _sig_params(init, True) if init is not None else []
-    return Change(file, qualname, kind="instance",
-                  params=_sig_params(node, True), ctor_params=ctor)
+    if (h_init is None) != (b_init is None):
+        return Change(file, qualname, skip=f"{cls_node.name}.__init__ was added or removed")
+    if h_init is None:
+        ctor = []
+    else:
+        ctor = _reconcile(_sig_params(b_init, True), _sig_params(h_init, True),
+                          len(h_init.args.defaults))
+        if ctor is None:
+            return Change(file, qualname,
+                          skip=f"{cls_node.name}.__init__ " + _sig_msg(b_init, h_init, True))
+    params = _reconcile(_sig_params(base_node, True), _sig_params(node, True),
+                        len(node.args.defaults))
+    if params is None:
+        return Change(file, qualname, skip=_sig_msg(base_node, node, True))
+    return Change(file, qualname, kind="instance", params=params, ctor_params=ctor)
 
 
 def changed_functions(repo, base, head) -> list[Change]:
@@ -189,7 +242,7 @@ def changed_functions(repo, base, head) -> list[Change]:
         bt, ht = _targets(b), _targets(h)
         for qual in sorted(set(bt) & set(ht)):
             if ast.dump(bt[qual][0]) != ast.dump(ht[qual][0]):
-                out.append(_describe(f, qual, *ht[qual]))
+                out.append(_describe(f, qual, *ht[qual], *bt[qual]))
     return out
 
 
