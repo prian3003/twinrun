@@ -142,6 +142,44 @@ changed in a way that leaves no identical-input comparison, and callables for wh
 no usable input could be built. Untyped parameters get a generic spread, which
 usually lands on `TypeError` identically on both sides and reports nothing.
 
+## Prior art
+
+Most tools that look adjacent are solving a different problem.
+
+**Diff readers** — Copilot code review, CodeRabbit, Greptile, Qodo, Cursor
+BugBot. An LLM reads the patch and writes comments. Nothing runs, so nothing is
+measured: they can suspect that a division changed type, and twinrun can tell you
+that `Cart(0).total()` returned `0` before the commit and `0.0` after.
+
+**Static analysis** — Semgrep, CodeQL, Sonar. Rules against one revision. They
+find the bug classes someone wrote a rule for, which is the complement of what a
+differential run finds: the bug nobody anticipated, in code specific to you.
+
+**Test generators** — Pynguin, EvoSuite, Diffblue. Also synthesise inputs, but
+against one revision, and then have to invent assertions. twinrun never invents
+an assertion. The old code is the assertion.
+
+**API surface diff** — `cargo-semver-checks`, `japicmp`, `apidiff`, libabigail.
+Compare signatures across versions. A function that keeps its signature and
+changes its answer is exactly what they are built not to notice.
+
+**Production traffic diffing** — GitHub Scientist, Twitter's and Meta's Diffy.
+The same idea — run both, compare — at request level, on real traffic, after you
+have shipped. twinrun is the pre-merge, function-level form, and needs no traffic.
+
+**CrossHair `diffbehavior`** is the real overlap: same premise, opposite engine.
+It explores the two functions symbolically with z3 rather than running them.
+Measured against it on a 2-parameter integer function with an `int`/`float`
+division bug, it wins on completeness — a solver proves there is no differing
+input, where a corpus can only fail to find one — and took 30.2s. Measured
+against itsdangerous `37f0997`, where `TimestampSigner.unsign` routes through
+`hmac` and `hashlib`, it ran 20m01s and 7391 iterations and reported no
+difference; z3 has no theory for SHA-1, so it cannot construct a signature that
+verifies, and every path past that check stays unreachable. twinrun does that
+commit in 1.5s — 4 callables, 84 probes, 3 findings — because concrete execution
+does not care what a function is made of, and because it finds the four callables
+itself from the git range instead of being handed a pair of names.
+
 ## Limits today
 
 Probes run your code for real. There is no sandbox yet, so a function that writes
