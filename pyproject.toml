@@ -1,0 +1,16 @@
+[project]
+name = "twinrun"
+version = "0.1.0"
+description = "Run the old and new version of changed code on identical inputs and diff the outputs."
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+twinrun = "twinrun.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["twinrun"]
