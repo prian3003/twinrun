@@ -256,6 +256,24 @@ def is_test_path(path: str) -> bool:
     return bool(TEST_PATH.search(path))
 
 
+# Callers pulled in per file when a helper they call changed. Capped because the
+# match is by name: an attribute access happens to look like a call to a method
+# of the same name, and probing a few extra callables is cheaper than resolving
+# that properly.
+CALLER_LIMIT = 4
+
+
+def _refs(node) -> set[str]:
+    """Every bare name and attribute name mentioned in a body."""
+    out = set()
+    for n in ast.walk(node):
+        if isinstance(n, ast.Name):
+            out.add(n.id)
+        elif isinstance(n, ast.Attribute):
+            out.add(n.attr)
+    return out
+
+
 def changed_functions(repo, base, head, include_tests: bool = False) -> list[Change]:
     """Callables present in both revisions whose AST differs.
 
@@ -274,11 +292,21 @@ def changed_functions(repo, base, head, include_tests: bool = False) -> list[Cha
             continue
         bt, ht = _targets(b), _targets(h)
         ctors = {k: v for k, v in _class_ctors(h).items() if v is not None}
-        for qual in sorted(set(bt) & set(ht)):
-            if ast.dump(bt[qual][0]) != ast.dump(ht[qual][0]):
-                ch = _describe(f, qual, *ht[qual], *bt[qual])
-                ch.ctors = ctors
-                out.append(ch)
+        pairs = sorted(set(bt) & set(ht))
+        hit = [q for q in pairs if ast.dump(bt[q][0]) != ast.dump(ht[q][0])]
+
+        # Extracting a helper leaves its callers byte-identical while their
+        # behaviour moves underneath them. Probe one level of those too: the
+        # helper's own finding names a private function, the caller's names the
+        # thing anyone actually calls.
+        tails = {q.rsplit(".", 1)[-1] for q in hit}
+        callers = [q for q in pairs
+                   if q not in hit and _refs(ht[q][0]) & tails][:CALLER_LIMIT]
+
+        for qual in hit + callers:
+            ch = _describe(f, qual, *ht[qual], *bt[qual])
+            ch.ctors = ctors
+            out.append(ch)
     return out
 
 

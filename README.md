@@ -33,7 +33,10 @@ Exits 1 when there is a finding, 2 on a usage error, so it drops into CI as-is.
 ## How it works
 
 1. **Blast radius** — diff the two revisions, parse both sides, keep the callables
-   whose AST actually changed. Comment and formatting changes never reach step 2.
+   whose AST actually changed, plus one level of their callers in the same file.
+   Extracting a helper leaves its callers byte-identical while their behaviour
+   moves underneath them, and the caller is the name anyone actually calls.
+   Comment and formatting changes never reach step 2.
 2. **Signatures** — ask the interpreter, in each worktree, what the target and its
    constructor actually take. The parse tree cannot see a constructor inherited
    from a base class in another module, cannot expand a type alias, and cannot
@@ -120,4 +123,12 @@ test suite you would already run.
 The probe corpus is fixed. It finds changes that a boring edge value reaches, and
 misses changes that need a specific structured input. Constructor synthesis stops
 at one level: a class whose `__init__` wants another project type falls back to a
-no-argument call.
+no-argument call. Caller propagation stops at one level too, and matches by name
+within a file rather than resolving the call graph.
+
+`sandbox.py` builds a repository whose answers are known — thirteen commits a
+reviewer would wave through, some of which quietly change behaviour — and scores
+a sweep against them, including the cases that are meant to stay silent:
+
+    make sandbox              # build, sweep, score
+    make sandbox DIR=/tmp/x   # keep the repo to poke at
