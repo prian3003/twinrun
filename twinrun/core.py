@@ -44,6 +44,10 @@ UNTYPED = ["0", "1", "-1", "''", "'a'", "[]", "{}", "None", "True", "-0.5"]
 
 DECOR_OK = {"staticmethod", "classmethod"}
 
+# Probing a test file means calling its entry points, which runs the suite and
+# then reports that its own output changed. True, and useless.
+TEST_PATH = re.compile(r"(^|/)(tests?/|test_[^/]*\.py$|[^/]*_test\.py$|conftest\.py$)")
+
 
 # --------------------------------------------------------------------------
 # blast radius: which callables actually changed behaviour-relevant source
@@ -248,7 +252,11 @@ def _describe(file: str, qualname: str, node, cls_node, base_node, base_cls) -> 
     return Change(file, qualname, kind="instance", params=params, ctor_params=ctor)
 
 
-def changed_functions(repo, base, head) -> list[Change]:
+def is_test_path(path: str) -> bool:
+    return bool(TEST_PATH.search(path))
+
+
+def changed_functions(repo, base, head, include_tests: bool = False) -> list[Change]:
     """Callables present in both revisions whose AST differs.
 
     Present-in-both is the requirement, not an approximation: a callable with no
@@ -257,6 +265,9 @@ def changed_functions(repo, base, head) -> list[Change]:
     out = []
     names = git(repo, "diff", "--name-only", base, head).split("\n")
     for f in [n for n in names if n.endswith(".py")]:
+        if not include_tests and is_test_path(f):
+            out.append(Change(f, f, skip="test file, pass --include-tests to probe it"))
+            continue
         b = git(repo, "show", f"{base}:{f}", check=False)
         h = git(repo, "show", f"{head}:{f}", check=False)
         if not b or not h:
@@ -382,13 +393,14 @@ def run_side(worktree: Path, change: Change, probes, timeout: float, tmp: Path):
     return data["results"], None
 
 
-def verify(repo, base, head, limit=24, timeout=20.0, seed=0, repeats=2) -> Report:
+def verify(repo, base, head, limit=24, timeout=20.0, seed=0, repeats=2,
+           include_tests=False) -> Report:
     repo = Path(repo).resolve()
     if not (repo / ".git").exists():
         raise RuntimeError(f"{repo} is not a git repository")
     base, head = resolve(repo, base), resolve(repo, head)
     rep = Report()
-    changes = changed_functions(repo, base, head)
+    changes = changed_functions(repo, base, head, include_tests)
     if not changes:
         return rep
 

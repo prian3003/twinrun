@@ -128,9 +128,11 @@ def fixture(root: Path):
     git(root, "config", "user.email", "dev@example.com")
     git(root, "config", "user.name", "dev")
     (root / "calc.py").write_text(BASE)
+    (root / "test_calc.py").write_text("def check() -> int:\n    return 1\n")
     git(root, "add", "-A")
     git(root, "commit", "-qm", "add calc")
     (root / "calc.py").write_text(HEAD)
+    (root / "test_calc.py").write_text("def check() -> int:\n    return 2\n")
     git(root, "add", "-A")
     git(root, "commit", "-qm", "tweak calc")
 
@@ -174,6 +176,9 @@ def main():
     assert "slug" not in hit, "equivalent rewrite reported as a delta"
     assert "jitter" not in hit, "non-deterministic function reported as a delta"
     assert "where" not in hit, "the two checkout paths reported as a behaviour delta"
+    assert "check" not in hit, "a test file was probed by default"
+    assert "test file" in skipped.get("test_calc.py", ""), \
+        f"test file should be skipped by name, got {skipped.get('test_calc.py')!r}"
     assert rep.flaky > 0, "flake filter never fired on a random() function"
     assert "Cart.__init__" in skipped, "constructor should be skipped with a reason"
 

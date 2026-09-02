@@ -65,13 +65,15 @@ def main(argv=None):
     ap.add_argument("--limit", type=int, default=24, help="max probes per callable")
     ap.add_argument("--timeout", type=float, default=20.0, help="seconds per side per callable")
     ap.add_argument("--seed", type=int, default=0, help="probe sampling seed")
+    ap.add_argument("--include-tests", action="store_true",
+                    help="also probe test files, which means running the suite")
     ap.add_argument("--repeats", type=int, default=2,
                     help="runs per side; raise it when a target has few possible outputs")
     a = ap.parse_args(argv)
 
     try:
         rep = verify(a.repo, a.base, a.head, limit=a.limit, timeout=a.timeout, seed=a.seed,
-                     repeats=a.repeats)
+                     repeats=a.repeats, include_tests=a.include_tests)
     except RuntimeError as e:
         print(f"twinrun: {e}", file=sys.stderr)
         return 2
