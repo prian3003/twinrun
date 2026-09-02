@@ -10,9 +10,11 @@ Output (file at `out`, JSON):
 import builtins
 import contextlib
 import importlib
+import inspect
 import importlib.util
 import io
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -24,10 +26,15 @@ LIMIT = 2000
 # same placeholder before anything is compared.
 ROOTS = []
 
+# A default repr carries the object's address, which changes every run. Left in,
+# it makes every object-valued result look non-deterministic.
+ADDR = re.compile(r"(?<= at 0x)[0-9a-fA-F]+(?=>)")
+
 
 def cap(s):
     for r in ROOTS:
         s = s.replace(r, "<repo>")
+    s = ADDR.sub("...", s)
     return s if len(s) <= LIMIT else s[:LIMIT] + f"...<{len(s)} chars total>"
 
 
@@ -116,6 +123,62 @@ def call(mod, env, payload, argsrc):
     return out
 
 
+def _ann(a):
+    """Annotation as source text a probe can be built from. Type aliases and
+    string annotations are resolved by inspect; typing constructs keep their full
+    form, since collapsing Union[str, bytes] to "Union" loses the whole point."""
+    if a is inspect.Parameter.empty:
+        return ""
+    if isinstance(a, str):
+        return a
+    if isinstance(a, type):
+        return a.__name__
+    return str(a)
+
+
+def _params_of(fn, drop_first):
+    try:
+        sig = inspect.signature(fn, eval_str=True)
+    except BaseException:
+        try:
+            sig = inspect.signature(fn)
+        except BaseException as e:
+            return None, f"{type(e).__name__}: {e}"
+    out = []
+    for i, (name, p) in enumerate(sig.parameters.items()):
+        if drop_first and i == 0:
+            continue
+        if p.kind in (p.VAR_POSITIONAL, p.VAR_KEYWORD, p.KEYWORD_ONLY):
+            return None, f"{name} is {p.kind.description}"
+        out.append([name, _ann(p.annotation), p.default is not p.empty])
+    return out, None
+
+
+def introspect(mod, payload):
+    """Real signatures, resolved by the interpreter. The parse tree cannot see an
+    inherited constructor, cannot expand a type alias, and cannot resolve a
+    string annotation."""
+    kind, qualname = payload["kind"], payload["qualname"]
+    if kind == "function":
+        target, ctor_src = getattr(mod, qualname), None
+    else:
+        cls_name, name = qualname.split(".", 1)
+        cls = getattr(mod, cls_name)
+        target = getattr(cls, name)
+        ctor_src = cls
+
+    params, why = _params_of(target, drop_first=(kind == "instance"))
+    if params is None:
+        return {"params": None, "reason": why}
+
+    ctor = []
+    if kind == "instance" and ctor_src.__init__ is not object.__init__:
+        ctor, why = _params_of(ctor_src.__init__, drop_first=True)
+        if ctor is None:
+            return {"params": None, "reason": f"__init__: {why}"}
+    return {"params": params, "ctor": ctor}
+
+
 def main():
     payload = json.load(sys.stdin)
     out = Path(payload["out"])
@@ -125,6 +188,9 @@ def main():
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
             mod = load(root, payload["file"])
+        if payload.get("mode") == "introspect":
+            out.write_text(json.dumps(introspect(mod, payload)))
+            return
         env = dict(vars(mod))
         env["__builtins__"] = builtins
         results = [call(mod, env, payload, a) for a in payload["probes"]]

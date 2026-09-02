@@ -34,27 +34,35 @@ Exits 1 when there is a finding, 2 on a usage error, so it drops into CI as-is.
 
 1. **Blast radius** — diff the two revisions, parse both sides, keep the callables
    whose AST actually changed. Comment and formatting changes never reach step 2.
-2. **Probes** — build inputs from each parameter's type annotation, using a small
+2. **Signatures** — ask the interpreter, in each worktree, what the target and its
+   constructor actually take. The parse tree cannot see a constructor inherited
+   from a base class in another module, cannot expand a type alias, and cannot
+   resolve a string annotation; all three are ordinary in real code.
+3. **Probes** — build inputs from each parameter's type, using a small
    corpus of edge values (`0`, `-1`, `2**31`, `''`, `float('nan')`, `[]`, …). For a
    method, the constructor's parameters are probed in the same sweep, so the
    instance is part of the input.
 
    A parameter annotated with one of your own classes gets a real instance built
-   for it, by probing that class's `__init__` one level deep. Anything else that
+   for it, by probing that class's `__init__` one level deep. A constructor's
+   optional parameters are left at their defaults, since inventing values for them
+   mostly fails to build anything and the default is what real calls use. Anything else that
    is a bare name — an imported type, something it has never heard of — is tried
    as a no-argument constructor, resolved in the target module's own namespace.
    When that cannot be built the failure is identical on both sides, so a type it
    cannot model costs a probe and reports nothing. If nothing usable could be
    built at all, the callable is listed as skipped rather than counted as checked.
-3. **Twin run** — check out both revisions as git worktrees and call the target in
+4. **Twin run** — check out both revisions as git worktrees and call the target in
    a subprocess on each side with the same inputs. Return value, type, exception,
    stdout, argument mutation and instance state are all recorded. A method that
    returns `None` and quietly changes `self` is the common case, not an edge case.
-4. **Normalise** — the two revisions are checked out at different paths, so
+5. **Normalise** — the two revisions are checked out at different paths, so
    anything that surfaces its own location (a cwd, a `__file__`, a path inside an
    error message) would differ for a reason that has nothing to do with the
-   change. Both checkout roots collapse to `<repo>` before anything is compared.
-5. **Flake filter** — every probe runs twice per side. If a side disagrees with
+   change. Both checkout roots collapse to `<repo>` before anything is compared,
+   and the address inside a default `repr` collapses with them — left in, it makes
+   every object-valued result look non-deterministic.
+6. **Flake filter** — every probe runs twice per side. If a side disagrees with
    itself the probe is non-deterministic, and it is dropped rather than reported.
    Clocks, RNG, hash ordering and network calls come out here.
 

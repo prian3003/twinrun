@@ -362,18 +362,10 @@ def make_probes(change: Change, limit: int, seed: int = 0):
 # execution
 # --------------------------------------------------------------------------
 
-def run_side(worktree: Path, change: Change, probes, timeout: float, tmp: Path):
+def _invoke(worktree: Path, payload: dict, timeout: float, tmp: Path):
     out = tmp / "res.json"
     out.unlink(missing_ok=True)
-    payload = {
-        "root": str(worktree),
-        "file": change.file,
-        "qualname": change.qualname,
-        "kind": change.kind,
-        "n_ctor": len(change.ctor_params),
-        "probes": probes,
-        "out": str(out),
-    }
+    payload = {**payload, "root": str(worktree), "out": str(out)}
     try:
         subprocess.run(
             [sys.executable, str(CHILD)],
@@ -390,7 +382,51 @@ def run_side(worktree: Path, change: Change, probes, timeout: float, tmp: Path):
     data = json.loads(out.read_text())
     if "error" in data:
         return None, data["error"]
-    return data["results"], None
+    return data, None
+
+
+def run_side(worktree: Path, change: Change, probes, timeout: float, tmp: Path):
+    data, err = _invoke(worktree, {
+        "file": change.file,
+        "qualname": change.qualname,
+        "kind": change.kind,
+        "n_ctor": len(change.ctor_params),
+        "probes": probes,
+    }, timeout, tmp)
+    return (None, err) if data is None else (data["results"], None)
+
+
+def signatures(worktree: Path, change: Change, timeout: float, tmp: Path):
+    """Real parameter lists for the target and its constructor, from the running
+    interpreter rather than the parse tree."""
+    data, err = _invoke(worktree, {
+        "mode": "introspect",
+        "file": change.file,
+        "qualname": change.qualname,
+        "kind": change.kind,
+    }, timeout, tmp)
+    if data is None:
+        return None, None, err
+    if data["params"] is None:
+        return None, None, data.get("reason", "no signature")
+    return data["params"], data.get("ctor") or [], None
+
+
+def _agree(bsig, hsig, required_only: bool):
+    """Reconcile two introspected parameter lists.
+
+    A constructor is called only to get an instance, so inventing values for its
+    optional parameters mostly fails to build anything and the default is what
+    real calls use. A target's own optional parameters are the opposite: they are
+    often exactly where the behaviour moved.
+    """
+    keep = _reconcile([(n, a) for n, a, _ in bsig],
+                      [(n, a) for n, a, _ in hsig],
+                      sum(1 for _, _, d in hsig if d))
+    if keep is None:
+        return None
+    trimmed = hsig[:len(keep)]
+    return [(n, a) for n, a, d in trimmed if not (required_only and d)]
 
 
 def verify(repo, base, head, limit=24, timeout=20.0, seed=0, repeats=2,
@@ -414,6 +450,18 @@ def verify(repo, base, head, limit=24, timeout=20.0, seed=0, repeats=2,
                 if ch.skip:
                     rep.skipped.append((ch.qualname, ch.skip))
                     continue
+                bp, bc, berr = signatures(bw, ch, timeout, td)
+                hp, hc, herr = signatures(hw, ch, timeout, td)
+                if bp is None or hp is None:
+                    rep.skipped.append((ch.qualname, berr or herr))
+                    continue
+                params = _agree(bp, hp, required_only=False)
+                ctor = _agree(bc, hc, required_only=True)
+                if params is None or ctor is None:
+                    rep.skipped.append((ch.qualname, "signature changed"))
+                    continue
+                ch.params, ch.ctor_params = params, ctor
+
                 probes, why = make_probes(ch, limit, seed)
                 if probes is None:
                     rep.skipped.append((ch.qualname, why))
