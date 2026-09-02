@@ -17,6 +17,9 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - run: python test_twinrun.py
+      # A repository whose answers are known, swept end to end. Fails on a miss
+      # or a false positive; a "ceiling" case staying silent is expected.
+      - run: python sandbox.py
 
   # The tool verifies its own pull requests. If this is too noisy to live with,
   # that is the finding: the whole thesis rests on the output being signal.
