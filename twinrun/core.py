@@ -56,6 +56,7 @@ class Change:
     kind: str = "function"          # function | static | classmethod | instance
     params: list[tuple[str, str]] = field(default_factory=list)
     ctor_params: list[tuple[str, str]] = field(default_factory=list)
+    ctors: dict = field(default_factory=dict)   # local class -> __init__ params
     skip: str | None = None
 
 
@@ -115,6 +116,27 @@ def _targets(src: str) -> dict[str, tuple]:
             for m in n.body:
                 if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     out[f"{n.name}.{m.name}"] = (m, n)
+    return out
+
+
+def _class_ctors(src: str) -> dict[str, list]:
+    """Local classes and the parameters their __init__ takes, so a parameter
+    annotated with a project type can be built instead of skipped."""
+    try:
+        tree = ast.parse(src)
+    except SyntaxError:
+        return {}
+    out = {}
+    for n in tree.body:
+        if not isinstance(n, ast.ClassDef):
+            continue
+        init = _init_of(n)
+        if init is None:
+            out[n.name] = []
+        elif _bad_sig(init):
+            out[n.name] = None          # not constructible from a positional sweep
+        else:
+            out[n.name] = _sig_params(init, True)
     return out
 
 
@@ -240,9 +262,12 @@ def changed_functions(repo, base, head) -> list[Change]:
         if not b or not h:
             continue
         bt, ht = _targets(b), _targets(h)
+        ctors = {k: v for k, v in _class_ctors(h).items() if v is not None}
         for qual in sorted(set(bt) & set(ht)):
             if ast.dump(bt[qual][0]) != ast.dump(ht[qual][0]):
-                out.append(_describe(f, qual, *ht[qual], *bt[qual]))
+                ch = _describe(f, qual, *ht[qual], *bt[qual])
+                ch.ctors = ctors
+                out.append(ch)
     return out
 
 
@@ -250,27 +275,55 @@ def changed_functions(repo, base, head) -> list[Change]:
 # probes
 # --------------------------------------------------------------------------
 
-def _values(ann: str) -> list[str] | None:
+def _ctor_exprs(name: str, ctors: dict, limit: int = 3) -> list[str]:
+    """Source expressions that build an instance of a local class. One level
+    deep: a constructor that itself wants a project type falls back to a
+    no-argument call, which fails identically on both sides and so reports
+    nothing."""
+    params = ctors.get(name)
+    if not params:
+        return [f"{name}()"]
+    cols = []
+    for pname, pann in params:
+        v = _values(pann)               # no ctors: depth stops here
+        if v is None:
+            return [f"{name}()"]
+        cols.append(v[:3])
+    out = []
+    for combo in itertools.product(*cols):
+        out.append(f"{name}({', '.join(combo)})")
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _values(ann: str, ctors: dict | None = None) -> list[str] | None:
     if not ann:
         return UNTYPED
     names = re.findall(r"[A-Za-z_][A-Za-z0-9_]*", ann)
-    vals = None
+    optional = "None" in names or "Optional" in names
     for n in names:
         if n.lower() in CORPUS:
             vals = list(CORPUS[n.lower()])
-            break
-    if vals is None:
+            return vals + ["None"] if optional else vals
+    if not names:
         return None
-    if "None" in names or "Optional" in names:
-        vals.append("None")
-    return vals
+    head = names[0]
+    if ctors is not None and head in ctors:
+        vals = _ctor_exprs(head, ctors)
+    else:
+        # An imported or unknown type. Try the no-argument constructor: the name
+        # is resolved in the target module's own namespace, and if it cannot be
+        # built the failure is identical on both sides.
+        vals = [f"{head}()"]
+    return vals + ["None"] if optional else vals
 
 
 def make_probes(change: Change, limit: int, seed: int = 0):
     """One probe is the constructor arguments followed by the call arguments."""
     cols = []
     for pname, ann in (*change.ctor_params, *change.params):
-        v = _values(ann)
+        v = _values(ann, change.ctors)
         if v is None:
             return None, f"unmodelled type {ann!r} on {pname}"
         cols.append(v)
@@ -366,6 +419,13 @@ def verify(repo, base, head, limit=24, timeout=20.0, seed=0, repeats=2) -> Repor
                     if runs is None:
                         break
                 if runs is None:
+                    continue
+
+                # Attempting to build an input and failing is not coverage. Say so
+                # rather than counting the callable as verified.
+                dead = {"probe-error", "setup-raise"}
+                if all(r["kind"] in dead for r in runs["base", 0]):
+                    rep.skipped.append((ch.qualname, "no usable inputs could be built"))
                     continue
 
                 rep.checked += 1

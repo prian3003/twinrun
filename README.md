@@ -38,6 +38,14 @@ Exits 1 when there is a finding, 2 on a usage error, so it drops into CI as-is.
    corpus of edge values (`0`, `-1`, `2**31`, `''`, `float('nan')`, `[]`, …). For a
    method, the constructor's parameters are probed in the same sweep, so the
    instance is part of the input.
+
+   A parameter annotated with one of your own classes gets a real instance built
+   for it, by probing that class's `__init__` one level deep. Anything else that
+   is a bare name — an imported type, something it has never heard of — is tried
+   as a no-argument constructor, resolved in the target module's own namespace.
+   When that cannot be built the failure is identical on both sides, so a type it
+   cannot model costs a probe and reports nothing. If nothing usable could be
+   built at all, the callable is listed as skipped rather than counted as checked.
 3. **Twin run** — check out both revisions as git worktrees and call the target in
    a subprocess on each side with the same inputs. Return value, type, exception,
    stdout, argument mutation and instance state are all recorded. A method that
@@ -86,10 +94,10 @@ verifies that pull request against its own base branch.
 Module-level functions, instance methods, `@staticmethod` and `@classmethod`.
 
 Skipped, with the reason printed: `async def`, other decorators, `*args`/`**kwargs`,
-`__init__` (observed through the instance state its methods report), and parameters
-annotated with a type it can't build a value for. Untyped parameters get a generic
-spread, which usually lands on `TypeError` identically on both sides and reports
-nothing.
+`__init__` (observed through the instance state its methods report), signatures that
+changed in a way that leaves no identical-input comparison, and callables for which
+no usable input could be built. Untyped parameters get a generic spread, which
+usually lands on `TypeError` identically on both sides and reports nothing.
 
 ## Limits today
 
@@ -98,4 +106,6 @@ files or hits the network will do that, twice per side. Point it at a repo whose
 test suite you would already run.
 
 The probe corpus is fixed. It finds changes that a boring edge value reaches, and
-misses changes that need a specific structured input.
+misses changes that need a specific structured input. Constructor synthesis stops
+at one level: a class whose `__init__` wants another project type falls back to a
+no-argument call.

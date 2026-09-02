@@ -63,11 +63,11 @@ def result(kind, value, type_name, stdout="", mutated=""):
             "stdout": cap(stdout), "mutated": cap(mutated)}
 
 
-def call(mod, payload, argsrc):
+def call(mod, env, payload, argsrc):
     kind, qualname, n_ctor = payload["kind"], payload["qualname"], payload["n_ctor"]
     buf = io.StringIO()
     try:
-        vals = [eval(a, {"__builtins__": builtins}) for a in argsrc]
+        vals = [eval(a, env) for a in argsrc]
     except BaseException as e:
         return result("probe-error", f"{type(e).__name__}: {e}", "probe-error")
     ctor_args, args = vals[:n_ctor], vals[n_ctor:]
@@ -115,7 +115,9 @@ def main():
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
             mod = load(Path(payload["root"]), payload["file"])
-        results = [call(mod, payload, a) for a in payload["probes"]]
+        env = dict(vars(mod))
+        env["__builtins__"] = builtins
+        results = [call(mod, env, payload, a) for a in payload["probes"]]
         out.write_text(json.dumps({"results": results}))
     except BaseException as e:
         out.write_text(json.dumps({"error": f"{type(e).__name__}: {e}"}))

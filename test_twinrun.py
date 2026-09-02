@@ -26,6 +26,15 @@ def jitter(n: int) -> int:
     return n + random.random()
 
 
+class Money:
+    def __init__(self, cents: int):
+        self.cents = cents
+
+
+def fmt(m: Money) -> str:
+    return "$%s" % (m.cents // 100)
+
+
 def area(w: int) -> int:
     return w * w
 
@@ -63,6 +72,15 @@ def slug(name: str) -> str:
 def jitter(n: int) -> int:
     import random
     return n + random.random() * 2               # non-deterministic
+
+
+class Money:
+    def __init__(self, cents: int):
+        self.cents = cents
+
+
+def fmt(m: Money) -> str:
+    return "$%s" % (m.cents / 100)                 # project-typed parameter
 
 
 def area(w: int, h: int = 2) -> int:              # appended an optional parameter
@@ -138,13 +156,16 @@ def main():
     assert "signature changed" in skipped.get("scale", ""), \
         f"scale should be skipped as a signature change, got {skipped.get('scale')!r}"
 
+    # a parameter annotated with a project type gets a real instance built for it
+    assert "fmt" in hit, f"missed a change behind a project-typed parameter; found {hit}"
+
     # things that must stay quiet
     assert "slug" not in hit, "equivalent rewrite reported as a delta"
     assert "jitter" not in hit, "non-deterministic function reported as a delta"
     assert rep.flaky > 0, "flake filter never fired on a random() function"
     assert "Cart.__init__" in skipped, "constructor should be skipped with a reason"
 
-    assert rep.checked == 7, f"expected 7 callables twin-run, got {rep.checked}"
+    assert rep.checked == 8, f"expected 8 callables twin-run, got {rep.checked}"
 
     groups = cluster(rep.deltas)
     assert len(groups) < len(rep.deltas), "clustering collapsed nothing"
