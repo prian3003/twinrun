@@ -79,6 +79,8 @@ class Cart:
 
 class Tagged:
     def __init__(self, tag: str):
+        if not tag.startswith("acct-"):
+            raise ValueError("not an account tag")
         self.tag = tag
 
 
@@ -88,6 +90,21 @@ class Ledger(Tagged):
 
     def decode(self, row: Row) -> Cents:
         return int(row.split(":")[-1])
+''',
+    # A test suite, because every repository worth probing has one and it is
+    # where the valid inputs live. It is never probed -- only read for the
+    # literals and the constructions it writes down.
+    "tests/test_shop.py": '''
+import pytest
+
+from shop.cart import Ledger
+from shop.report import render
+from shop.token import sign, unsign
+
+
+def test_ledger_round_trip():
+    led = Ledger("acct-42")
+    assert led.decode(led.encode(150)) == 150
 ''',
 }
 
@@ -207,8 +224,19 @@ STEPS = [
     # New file: nothing to compare against, so nothing is probed.
     ("feat: add token signing and order ids", "quiet", [
         ("shop/token.py", None, TOKEN),
+        ("tests/test_shop.py", "    assert led.decode(led.encode(150)) == 150\n",
+         "    assert led.decode(led.encode(150)) == 150\n"
+         "\n"
+         "\n"
+         "def test_unsign_rejects_an_expired_token():\n"
+         "    assert unsign(sign(\"a\")) == \"a\"\n"
+         "    with pytest.raises(ValueError):\n"
+         "        unsign(\"a.1000000000.c708aa49aa8caa00\")\n"),
     ]),
-    ("fix: reject tokens older than the max age", "ceiling", [
+    # sign() stamps the current time, so no round trip through the module's own
+    # producers is ever expired. The one input that reaches this lives in the
+    # test suite, as a literal.
+    ("fix: reject tokens older than the max age", "find", [
         ("shop/token.py",
          "    if mac != _mac(payload):\n"
          "        raise ValueError(\"bad signature\")\n"
@@ -238,6 +266,9 @@ STEPS = [
     # A new module: nothing to compare against, so nothing is probed.
     ("feat: render ledger rows", "quiet", [
         ("shop/report.py", None, REPORT),
+        ("tests/test_shop.py", "    assert led.decode(led.encode(150)) == 150\n",
+         "    assert led.decode(led.encode(150)) == 150\n"
+         "    assert render(led.encode(150)) == \"acct-42\"\n"),
     ]),
     # The producer for this one is a method on a class in another module, whose
     # constructor is inherited from a third class, and whose parameter and
@@ -272,6 +303,7 @@ def build(root: Path):
     git(root, "config", "user.email", "dev@example.com")
     git(root, "config", "user.name", "dev")
     for name, src in SEED.items():
+        (root / name).parent.mkdir(parents=True, exist_ok=True)
         (root / name).write_text(src)
     git(root, "add", "-A")
     git(root, "commit", "-qm", "add the shop package")

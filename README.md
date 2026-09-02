@@ -47,9 +47,14 @@ Exits 1 when there is a finding, 2 on a usage error, so it drops into CI as-is.
    called to fill parameters of that type, including from the sibling modules
    this file imports from -- `timed.py` takes what `signer.py` signs. Type
    aliases are expanded, an inherited `__init__` is resolved to the base class
-   that defines it, and long string and bytes literals from the repository's own
-   tests are used as inputs: nobody's edge-value corpus produces a validly
-   signed payload, and the test suite is full of them. Producers are read from
+   that defines it, and the repository's own tests are read for inputs: nobody's
+   edge-value corpus produces a validly signed payload or guesses a separator a
+   constructor will accept, and the test suite has both. Long string and bytes
+   literals are taken as values, and a call whose arguments are all literals is
+   taken as a construction -- `Signer("secret-key")`, or the same thing written
+   as a `partial` in a pytest fixture. Two literals rank ahead of the producers
+   and the rest behind, so the input someone wrote down competes with the input
+   a round trip builds instead of always losing to it. Producers are read from
    the base revision only. A function that exists solely in head would raise
    `NameError` on one side and return a value on the other, which is a delta on
    every callable that consumes its type. Anything that changed is excluded, directly or by
@@ -59,6 +64,12 @@ Exits 1 when there is a finding, 2 on a usage error, so it drops into CI as-is.
    corpus of edge values (`0`, `-1`, `2**31`, `''`, `float('nan')`, `[]`, …). For a
    method, the constructor's parameters are probed in the same sweep, so the
    instance is part of the input.
+
+   A construction harvested from the tests replaces that sweep when there is one:
+   a constructor with six parameters spends six probe columns getting itself
+   built, and one the test suite already wrote spends one and is known to work.
+   Any commit that touches an `__init__` gives them up, since `__init__` resolves
+   through inheritance and the one that moved is not always the one named.
 
    A parameter annotated with one of your own classes gets a real instance built
    for it, by probing that class's `__init__` one level deep. A constructor's
@@ -138,18 +149,17 @@ files or hits the network will do that, twice per side. Point it at a repo whose
 test suite you would already run.
 
 The probe corpus is fixed, beyond what the module's own producers add. It finds
-changes that a boring edge value or a freshly produced one reaches, and misses
-changes that need a specific *state* -- a token that is signed and also expired,
-a connection that is open and also stale. Producers are matched on the
-annotation as written, so a producer returning `bytes` does not fill a parameter
-annotated `str | bytes`. Constructor synthesis stops
+changes that a boring edge value, a freshly produced one, or something the test
+suite wrote down reaches. It misses changes that need a state none of those
+three holds. Constructor synthesis stops
 at one level: a class whose `__init__` wants another project type falls back to a
 no-argument call. Caller propagation stops at one level too, and matches by name
 within a file rather than resolving the call graph.
 
 `sandbox.py` builds a repository whose answers are known — nineteen commits a
 reviewer would wave through, some of which quietly change behaviour — and scores
-a sweep against them, including the cases that are meant to stay silent:
+a sweep against them, including the cases that are meant to stay silent and the
+two that are only reachable through the sandbox's own test suite:
 
     make sandbox              # build, sweep, score
     make sandbox DIR=/tmp/x   # keep the repo to poke at

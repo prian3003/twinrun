@@ -62,7 +62,16 @@ class Change:
     ctor_params: list[tuple[str, str]] = field(default_factory=list)
     ctors: dict = field(default_factory=dict)   # local class -> __init__ params
     producers: dict = field(default_factory=dict)   # annotation -> call expressions
+    built: list[str] = field(default_factory=list)  # constructions taken from the tests
     skip: str | None = None
+
+    @property
+    def instances(self) -> list[str]:
+        """Whole constructions to probe with, in place of assembling the
+        constructor's arguments from the corpus. A constructor with six
+        parameters spends six probe columns on getting itself built; one the
+        test suite already wrote spends one, and is known to work."""
+        return self.built if self.kind == "instance" and self.built else []
 
 
 @dataclass
@@ -74,6 +83,7 @@ class Delta:
     head: dict
     kind: str = "function"
     n_ctor: int = 0
+    built: bool = False
 
 
 @dataclass
@@ -311,22 +321,64 @@ def _refs(node) -> set[str]:
     return out
 
 
-def _fixtures(repo, head, wanted: set[str], per_type: int = 6,
-              min_len: int = 12, max_len: int = 400) -> dict[str, list[str]]:
-    """Long string and bytes literals from the repository's own tests.
+CALL_LIMIT = 3              # constructions harvested per class
+
+
+def _literal(n) -> bool:
+    """An expression that evaluates to the same value anywhere, looking up no
+    name at all."""
+    if isinstance(n, ast.Constant):
+        return True
+    if isinstance(n, (ast.List, ast.Tuple, ast.Set)):
+        return all(_literal(e) for e in n.elts)
+    if isinstance(n, ast.Dict):
+        return all(k is not None and _literal(k) for k in n.keys) and \
+            all(_literal(v) for v in n.values)
+    if isinstance(n, ast.UnaryOp) and isinstance(n.op, (ast.USub, ast.UAdd)):
+        return _literal(n.operand)
+    return False
+
+
+def _literal_args(node) -> str | None:
+    """The argument source of a call, when every argument is a literal.
+
+    Anything else -- a fixture, an attribute, a local -- means the call is not
+    an expression outside the test that wrote it, and borrowing it would give
+    the two sides different values or no value at all.
+    """
+    parts = []
+    for a in node.args:
+        if not _literal(a):
+            return None
+        parts.append(ast.unparse(a))
+    for kw in node.keywords:
+        if kw.arg is None or not _literal(kw.value):
+            return None
+        parts.append(f"{kw.arg}={ast.unparse(kw.value)}")
+    return ", ".join(parts)
+
+
+def _fixtures(repo, rev, wanted: set[str], per_type: int = 6,
+              min_len: int = 12, max_len: int = 400):
+    """Literals and literal constructions from the repository's own tests.
 
     No corpus of edge values will produce "value.TgPVoaGhoQ.AGBfQ6G6cr07byTRt0z"
-    -- a signed payload whose timestamp is years old. The test suite is full of
-    inputs like it, written by someone who knew what a valid one looks like, and
-    they are literals, so both sides get the identical value by construction.
+    -- a signed payload whose timestamp is years old -- and none guesses a
+    separator that a constructor validating its arguments will accept. The test
+    suite has both, written by someone who knew what a valid one looks like.
+
+    A literal is the identical value on both sides by construction. A harvested
+    call is code, so it is only taken when its arguments are literals too.
 
     Only tests that mention something that changed are read.
+
+    Returns (literals by type name, constructions by callee name).
     """
-    out = {}
-    for f in git(repo, "ls-tree", "-r", "--name-only", head).split("\n"):
+    lits, calls = {}, {}
+    for f in git(repo, "ls-tree", "-r", "--name-only", rev).split("\n"):
         if not f.endswith(".py") or not is_test_path(f):
             continue
-        src = git(repo, "show", f"{head}:{f}", check=False)
+        src = git(repo, "show", f"{rev}:{f}", check=False)
         if not src or not (wanted & set(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", src))):
             continue
         try:
@@ -334,16 +386,31 @@ def _fixtures(repo, head, wanted: set[str], per_type: int = 6,
         except SyntaxError:
             continue
         for n in ast.walk(tree):
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Name):
+                # partial(TimestampSigner, secret_key="secret-key") is a
+                # construction; it is how a pytest fixture writes one.
+                name, node = n.func.id, n
+                if name == "partial" and n.args and isinstance(n.args[0], ast.Name):
+                    name = n.args[0].id
+                    node = ast.Call(func=n.func, args=n.args[1:], keywords=n.keywords)
+                args = _literal_args(node)
+                if args is None:
+                    continue
+                got = calls.setdefault(name, [])
+                expr = "%s(%s)" % (name, args)
+                if expr not in got and len(got) < CALL_LIMIT:
+                    got.append(expr)
+                continue
             if not isinstance(n, ast.Constant) or not isinstance(n.value, (str, bytes)):
                 continue
             if not min_len <= len(n.value) <= max_len:
                 continue
             key = "str" if isinstance(n.value, str) else "bytes"
-            got = out.setdefault(key, [])
+            got = lits.setdefault(key, [])
             src_text = repr(n.value)
             if src_text not in got and len(got) < per_type:
                 got.append(src_text)
-    return out
+    return lits, calls
 
 
 SIBLING_LIMIT = 12          # modules read from a package to look for producers
@@ -396,7 +463,12 @@ def changed_functions(repo, base, head, include_tests: bool = False) -> list[Cha
 
     if not moved:
         return out
-    fixtures = _fixtures(repo, head, moved)
+    # A literal is the same value whichever revision it was read from, so the
+    # fixtures come from head, where the commit's own new test may have added
+    # one. A harvested construction is code, and code comes from base for the
+    # same reason producers do.
+    fixtures, _ = _fixtures(repo, head, moved)
+    _, tcalls = _fixtures(repo, base, moved)
     tree_cache = {}
 
     for f, (b, h, bt, ht, pairs, hit) in seen.items():
@@ -418,7 +490,16 @@ def changed_functions(repo, base, head, include_tests: bool = False) -> list[Cha
         callers = [q for q in pairs
                    if q not in hit and _refs(ht[q][0]) & tails][:CALLER_LIMIT]
 
-        made = _producers(b, moved, ctors, fixtures)
+        made = _producers(b, moved, ctors, fixtures, calls=tcalls)
+
+        # A construction the tests perform is a producer of its own class: a
+        # parameter annotated `Signer` gets one the suite already proved valid,
+        # instead of a corpus guess the constructor refuses.
+        for cls, exprs in tcalls.items():
+            if cls not in ctors or f"{cls}.__init__" in moved:
+                continue
+            for e in exprs:
+                _produced(made, cls, cls, e, per_type=CALL_LIMIT)
 
         # The producer is often in the module the consumer imported it from:
         # timed.py takes what signer.py signs. Read the siblings this file
@@ -427,17 +508,29 @@ def changed_functions(repo, base, head, include_tests: bool = False) -> list[Cha
         for sib in sibs:
             if sib == b:
                 continue
-            for ann, exprs in _producers(sib, moved, ctors, fixtures).items():
+            for ann, exprs in _producers(sib, moved, ctors, fixtures,
+                                         calls=tcalls).items():
                 for ident, e in exprs:
                     if _head(e) in bound:
                         _produced(made, ann, ident, e, per_type=8)
 
+        # Two fixtures ahead of the producers, the rest behind. A literal from
+        # the test suite is the input someone who knew the format wrote down,
+        # and appending it left it below the cut every time; putting all of it
+        # in front would starve the producer a round-trip needs, so it splits.
         for k, v in fixtures.items():
-            made.setdefault(k, []).extend(("fixture", e) for e in v)
+            lit = [("fixture", e) for e in v]
+            made[k] = lit[:2] + made.get(k, []) + lit[2:]
         made = {k: [e for _, e in v] for k, v in made.items()}
         for qual in hit + callers:
             ch = _describe(f, qual, *ht[qual], *bt[qual])
             ch.ctors, ch.producers = ctors, made
+            # A changed constructor anywhere disqualifies every harvested
+            # construction: __init__ is resolved through inheritance, so the
+            # one that moved is not always the one named on the class.
+            cls = qual.split(".")[0] if "." in qual else ""
+            if cls and "__init__" not in moved:
+                ch.built = list(tcalls.get(cls, []))
             out.append(ch)
     return out
 
@@ -465,14 +558,21 @@ def _siblings(repo, head, f: str, cache: dict) -> list[str]:
 # probes
 # --------------------------------------------------------------------------
 
-def _ctor_exprs(name: str, ctors: dict, limit: int = 3, aliases: dict | None = None) -> list[str]:
+def _ctor_exprs(name: str, ctors: dict, limit: int = 3, aliases: dict | None = None,
+                calls: dict | None = None) -> list[str]:
     """Source expressions that build an instance of a local class. One level
     deep: a constructor that itself wants a project type falls back to a
     no-argument call, which fails identically on both sides and so reports
-    nothing."""
+    nothing.
+
+    A construction the test suite already performs comes first. Signer rejects
+    every separator the corpus contains -- ASCII letters, digits and -_= are
+    all refused -- so the guessed constructions all die in setup while the
+    tests, four lines away, hold one that works."""
+    real = list((calls or {}).get(name, []))
     params = ctors.get(name)
     if not params:
-        return [f"{name}()"]
+        return real[:limit] or [f"{name}()"]
     cols = []
     for pname, pann in params:
         v = _values(_expand(pann, aliases or {}))    # no ctors: depth stops here
@@ -485,7 +585,7 @@ def _ctor_exprs(name: str, ctors: dict, limit: int = 3, aliases: dict | None = N
     # product only ever varies the last parameter.
     for i in range(limit):
         out.append("%s(%s)" % (name, ", ".join(c[i % len(c)] for c in cols)))
-    return list(dict.fromkeys(out))
+    return list(dict.fromkeys(real + out))[:max(limit, len(real))]
 
 
 def _is_type_expr(n) -> bool:
@@ -568,6 +668,11 @@ def _produced(out, ann, ident, expr, per_type):
     method = ident.rsplit(".", 1)[-1]
     if len({i for i, _ in got if i.rsplit(".", 1)[-1] == method} - {ident}) >= 2:
         return
+    # Nor may one producer spend the budget on variants of itself. Four ways of
+    # calling TimestampSigner.sign is one idea; it was crowding out Signer.sign,
+    # which is the producer the consumer was actually written against.
+    if sum(1 for i, _ in got if i == ident) >= 2:
+        return
     if len(got) < per_type:
         got.append((ident, expr))
 
@@ -596,7 +701,8 @@ def _args_from(params, drop_first: bool, fixtures: dict | None = None,
 
 
 def _producers(src: str, exclude: set[str], ctors: dict | None = None,
-               fixtures: dict | None = None, per_type: int = 4) -> dict[str, list[str]]:
+               fixtures: dict | None = None, per_type: int = 4,
+               calls: dict | None = None) -> dict[str, list[str]]:
     """Module functions that make a value of some type, as call expressions.
 
     A corpus of edge values cannot build a signed token, a parsed config or an
@@ -631,7 +737,7 @@ def _producers(src: str, exclude: set[str], ctors: dict | None = None,
                 continue
             # Two constructions, not one: plenty of constructors reject the
             # empty string outright and take the value next to it.
-            insts = _ctor_exprs(n.name, ctors, limit=2, aliases=al)
+            insts = _ctor_exprs(n.name, ctors, limit=2, aliases=al, calls=calls)
             for m in n.body:
                 if not isinstance(m, ast.FunctionDef) or m.returns is None:
                     continue
@@ -696,7 +802,10 @@ def _values(ann: str, ctors: dict | None = None,
 def make_probes(change: Change, limit: int, seed: int = 0):
     """One probe is the constructor arguments followed by the call arguments."""
     cols = []
-    for pname, ann in (*change.ctor_params, *change.params):
+    inst = change.instances
+    if inst:
+        cols.append(inst)
+    for pname, ann in [*([] if inst else change.ctor_params), *change.params]:
         v = _values(ann, change.ctors, change.producers)
         if v is None:
             return None, f"unmodelled type {ann!r} on {pname}"
@@ -762,7 +871,8 @@ def run_side(worktree: Path, change: Change, probes, timeout: float, tmp: Path):
         "file": change.file,
         "qualname": change.qualname,
         "kind": change.kind,
-        "n_ctor": len(change.ctor_params),
+        "n_ctor": 1 if change.instances else len(change.ctor_params),
+        "built": bool(change.instances),
         "probes": probes,
     }, timeout, tmp)
     return (None, err) if data is None else (data["results"], None)
@@ -870,8 +980,10 @@ def verify(repo, base, head, limit=24, timeout=20.0, seed=0, repeats=2,
                         continue
                     rep.probes += 1
                     if bs[0] != hs[0]:
-                        rep.deltas.append(Delta(ch.file, ch.qualname, args, bs[0], hs[0],
-                                            ch.kind, len(ch.ctor_params)))
+                        rep.deltas.append(Delta(
+                            ch.file, ch.qualname, args, bs[0], hs[0], ch.kind,
+                            1 if ch.instances else len(ch.ctor_params),
+                            bool(ch.instances)))
         finally:
             git(repo, "worktree", "remove", "--force", str(bw), check=False)
             git(repo, "worktree", "remove", "--force", str(hw), check=False)

@@ -16,7 +16,8 @@ def render_call(d):
     args = ", ".join(d.args[d.n_ctor:])
     if d.kind == "instance":
         cls, meth = d.qualname.split(".", 1)
-        return f"{cls}({', '.join(d.args[:d.n_ctor])}).{meth}({args})"
+        recv = d.args[0] if d.built else f"{cls}({', '.join(d.args[:d.n_ctor])})"
+        return f"{recv}.{meth}({args})"
     return f"{d.qualname}({args})"
 
 

@@ -97,7 +97,9 @@ def call(mod, env, payload, argsrc):
     try:
         with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
             if kind == "instance":
-                inst = owner(*ctor_args)          # fresh instance per probe
+                # A construction harvested from the tests arrives already built;
+                # anything else is assembled from its constructor's arguments.
+                inst = ctor_args[0] if payload.get("built") else owner(*ctor_args)
                 fn = getattr(inst, name)
             else:
                 fn = getattr(owner, name)
