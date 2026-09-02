@@ -16,7 +16,7 @@ import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from twinrun.core import verify
+from twinrun.core import cluster, verify
 
 SEED = {
     "shop/__init__.py": "",
@@ -67,9 +67,43 @@ class Cart:
 ''',
 }
 
+TOKEN = '''
+import hashlib
+import random
+import time
+
+SECRET = "s3cret"
+MAX_AGE = 3600
+
+
+def _mac(payload: str) -> str:
+    return hashlib.sha256((payload + SECRET).encode()).hexdigest()[:16]
+
+
+def sign(payload: str) -> str:
+    return "%s.%d.%s" % (payload, int(time.time()), _mac(payload))
+
+
+def unsign(token: str) -> str:
+    payload, _, rest = token.partition(".")
+    ts, _, mac = rest.partition(".")
+    if mac != _mac(payload):
+        raise ValueError("bad signature")
+    return payload
+
+
+def order_id(prefix: str) -> str:
+    return "%s-%d" % (prefix, int(random.random() * 1e6))
+'''
+
 # (message, expectation, [(file, anchor, replacement), ...])
-# "find"  -- behaviour changed; silence here is a miss.
-# "quiet" -- behaviour identical; a finding here is a false positive.
+# An anchor of None means the file is created rather than patched.
+# "find"    -- behaviour changed; silence here is a miss.
+# "quiet"   -- behaviour identical; a finding here is a false positive.
+# "flaky"   -- behaviour is non-deterministic; the filter must drop it, not report it.
+# "ceiling" -- behaviour changed, but only behind an input the fixed corpus cannot
+#              build. Silence is the honest answer today. When probe synthesis
+#              lands this row should flip to "find", and the sweep will say so.
 STEPS = [
     ("refactor: pull the percentage math into a helper", "find", [
         ("shop/pricing.py",
@@ -128,6 +162,36 @@ STEPS = [
          "        return sum(self.lines) * (100 + self.rate) // 100",
          "        return sum(x for x in self.lines) * (100 + self.rate) // 100"),
     ]),
+    # One edit, two callables downstream of it. Each gets its own finding; neither
+    # gets split into one finding per probe.
+    ("refactor: clamp the percentage in one place", "find", [
+        ("shop/pricing.py",
+         "    return round(amount * pct / 100)",
+         "    return round(amount * min(pct, 100) / 100)"),
+        ("shop/pricing.py",
+         "    return amount + amount * rate_pct // 100",
+         "    return amount + pct_of(amount, rate_pct)"),
+    ]),
+    # New file: nothing to compare against, so nothing is probed.
+    ("feat: add token signing and order ids", "quiet", [
+        ("shop/token.py", None, TOKEN),
+    ]),
+    ("fix: reject tokens older than the max age", "ceiling", [
+        ("shop/token.py",
+         "    if mac != _mac(payload):\n"
+         "        raise ValueError(\"bad signature\")\n"
+         "    return payload\n",
+         "    if mac != _mac(payload):\n"
+         "        raise ValueError(\"bad signature\")\n"
+         "    if time.time() - int(ts) > MAX_AGE:\n"
+         "        raise ValueError(\"expired\")\n"
+         "    return payload\n"),
+    ]),
+    ("chore: widen the order id", "flaky", [
+        ("shop/token.py",
+         "    return \"%s-%d\" % (prefix, int(random.random() * 1e6))",
+         "    return \"%s-%d\" % (prefix, int(random.random() * 1e9))"),
+    ]),
 ]
 
 
@@ -149,6 +213,9 @@ def build(root: Path):
     for msg, _, edits in STEPS:
         for name, anchor, new in edits:
             p = root / name
+            if anchor is None:
+                p.write_text(new)
+                continue
             src = p.read_text()
             assert anchor in src, f"{msg}: anchor not found in {name}:\n{anchor}"
             p.write_text(src.replace(anchor, new, 1))
@@ -156,31 +223,43 @@ def build(root: Path):
         git(root, "commit", "-qm", msg)
 
 
+def verdict(expect, rep):
+    """(ok, label). A ceiling that starts firing is progress, not a failure."""
+    found = bool(rep.deltas)
+    if expect == "find":
+        return found, "ok " if found else "MISS"
+    if expect == "quiet":
+        return not found, "ok " if not found else "FALSE+"
+    if expect == "flaky":
+        ok = not found and rep.flaky > 0
+        return ok, "ok " if ok else ("FALSE+" if found else "NOTDROPPED")
+    if found:
+        return True, "LIFTED"          # the corpus reached it after all
+    return True, "ceil"
+
+
 def sweep(root: Path):
     n = len(STEPS)
     print(f"sandbox  {n} commits\n")
-    hits = misses = falses = 0
+    tally = {}
 
     for i, (msg, expect, _) in enumerate(STEPS):
         back = n - i
         rep = verify(root, f"HEAD~{back}", f"HEAD~{back - 1}" if back > 1 else "HEAD")
-        found = bool(rep.deltas)
-        ok = found == (expect == "find")
-        if ok:
-            hits += 1
-        elif expect == "find":
-            misses += 1
-        else:
-            falses += 1
+        ok, label = verdict(expect, rep)
+        tally[label] = tally.get(label, 0) + 1
 
+        groups = cluster(rep.deltas)
         names = ",".join(sorted({d.qualname for d in rep.deltas})) or "-"
-        print(f"  {'ok ' if ok else 'FAIL'}  {msg[:44]:<44} {expect:<5} "
-              f"{names:<22} {rep.checked} checked · {rep.probes} probes · {rep.flaky} flaky")
+        print(f"  {label:<10} {msg[:42]:<42} {expect:<7} {names:<26} "
+              f"{len(groups)} findings · {rep.checked} checked · "
+              f"{rep.probes} probes · {rep.flaky} flaky")
 
-    want = sum(1 for _, e, _ in STEPS if e == "find")
-    print(f"\n{hits}/{n} correct · {misses} missed of {want} real changes"
-          f" · {falses} false positives")
-    return misses + falses
+    bad = sum(v for k, v in tally.items() if k not in ("ok ", "ceil", "LIFTED"))
+    print("\n" + " · ".join(f"{v} {k.strip().lower()}" for k, v in sorted(tally.items())))
+    if tally.get("LIFTED"):
+        print("a ceiling case now reports: update its expectation to \"find\"")
+    return bad
 
 
 def main():
