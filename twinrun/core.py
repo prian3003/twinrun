@@ -169,8 +169,11 @@ def _sig_msg(base_node, head_node, drop_first) -> str:
 
 
 def _bad_sig(node) -> bool:
-    a = node.args
-    return bool(a.vararg or a.kwarg or a.kwonlyargs)
+    """*args and **kwargs are optional by construction, and a keyword-only
+    parameter with a default can be left at it -- none of the three is a reason
+    to give up on a callable. A keyword-only parameter with no default has to be
+    passed by name, which the positional probe path cannot do."""
+    return any(d is None for d in node.args.kw_defaults)
 
 
 def _names(params):
@@ -207,7 +210,7 @@ def _describe(file: str, qualname: str, node, cls_node, base_node, base_cls) -> 
         if decs:
             return Change(file, qualname, skip=f"decorated ({', '.join(sorted(decs))})")
         if _bad_sig(node) or _bad_sig(base_node):
-            return Change(file, qualname, skip="*args/**kwargs/keyword-only")
+            return Change(file, qualname, skip="a keyword-only parameter has no default")
         params = _reconcile(_sig_params(base_node, False), _sig_params(node, False),
                             len(node.args.defaults))
         if params is None:
@@ -222,7 +225,7 @@ def _describe(file: str, qualname: str, node, cls_node, base_node, base_cls) -> 
     if unknown:
         return Change(file, qualname, skip=f"decorated ({', '.join(sorted(unknown))})")
     if _bad_sig(node) or _bad_sig(base_node):
-        return Change(file, qualname, skip="*args/**kwargs/keyword-only")
+        return Change(file, qualname, skip="a keyword-only parameter has no default")
     if decs & DECOR_OK:
         drop = "classmethod" in decs
         params = _reconcile(_sig_params(base_node, drop), _sig_params(node, drop),
@@ -234,7 +237,7 @@ def _describe(file: str, qualname: str, node, cls_node, base_node, base_cls) -> 
 
     h_init, b_init = _init_of(cls_node), _init_of(base_cls)
     if (h_init is not None and _bad_sig(h_init)) or (b_init is not None and _bad_sig(b_init)):
-        return Change(file, qualname, skip=f"{cls_node.name}.__init__ takes *args/**kwargs")
+        return Change(file, qualname, skip=f"{cls_node.name}.__init__ has a keyword-only parameter with no default")
     if (h_init is None) != (b_init is None):
         return Change(file, qualname, skip=f"{cls_node.name}.__init__ was added or removed")
     if h_init is None:

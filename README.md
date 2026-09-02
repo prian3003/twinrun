@@ -108,8 +108,11 @@ verifies that pull request against its own base branch.
 
 Module-level functions, instance methods, `@staticmethod` and `@classmethod`.
 
-Skipped, with the reason printed: `async def`, other decorators, `*args`/`**kwargs`,
-`__init__` (observed through the instance state its methods report), signatures that
+`*args`, `**kwargs`, and keyword-only parameters that have defaults: none of them
+needs a value, so the callable is probed on its positional parameters.
+
+Skipped, with the reason printed: `async def`, other decorators, a keyword-only
+parameter with no default, `__init__` (observed through the instance state its methods report), signatures that
 changed in a way that leaves no identical-input comparison, and callables for which
 no usable input could be built. Untyped parameters get a generic spread, which
 usually lands on `TypeError` identically on both sides and reports nothing.
@@ -126,7 +129,7 @@ at one level: a class whose `__init__` wants another project type falls back to 
 no-argument call. Caller propagation stops at one level too, and matches by name
 within a file rather than resolving the call graph.
 
-`sandbox.py` builds a repository whose answers are known — thirteen commits a
+`sandbox.py` builds a repository whose answers are known — fifteen commits a
 reviewer would wave through, some of which quietly change behaviour — and scores
 a sweep against them, including the cases that are meant to stay silent:
 

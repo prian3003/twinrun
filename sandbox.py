@@ -47,6 +47,14 @@ def clean_code(code: str) -> str:
 
 def discount(amount: int, pct: int) -> int:
     return amount - amount * pct // 100
+
+
+def summary(amount: int, *parts, **opts) -> str:
+    return "total: %d" % amount
+
+
+def fee(amount: int, *, minimum: int = 5) -> int:
+    return max(amount // 10, minimum)
 ''',
     "shop/cart.py": '''
 from .pricing import line_total
@@ -186,6 +194,16 @@ STEPS = [
          "    if time.time() - int(ts) > MAX_AGE:\n"
          "        raise ValueError(\"expired\")\n"
          "    return payload\n"),
+    ]),
+    # *args and **kwargs need nothing passed, and a keyword-only parameter with a
+    # default can stay at it. None of the three is a reason to skip a callable.
+    ("chore: pad the summary line", "find", [
+        ("shop/pricing.py", '    return "total: %d" % amount',
+         '    return "total: %5d" % amount'),
+    ]),
+    ("fix: apply the minimum fee as a ceiling", "find", [
+        ("shop/pricing.py", "    return max(amount // 10, minimum)",
+         "    return min(amount // 10, minimum)"),
     ]),
     ("chore: widen the order id", "flaky", [
         ("shop/token.py",

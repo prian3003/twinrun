@@ -148,8 +148,12 @@ def _params_of(fn, drop_first):
     for i, (name, p) in enumerate(sig.parameters.items()):
         if drop_first and i == 0:
             continue
-        if p.kind in (p.VAR_POSITIONAL, p.VAR_KEYWORD, p.KEYWORD_ONLY):
-            return None, f"{name} is {p.kind.description}"
+        if p.kind in (p.VAR_POSITIONAL, p.VAR_KEYWORD):
+            continue                    # nothing has to be passed for these
+        if p.kind is p.KEYWORD_ONLY:
+            if p.default is not p.empty:
+                continue                # leave it at its default
+            return None, f"{name} is keyword-only with no default"
         out.append([name, _ann(p.annotation), p.default is not p.empty])
     return out, None
 
