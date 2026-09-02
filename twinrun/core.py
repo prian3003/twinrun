@@ -421,13 +421,26 @@ def _producers(src: str, exclude: set[str], ctors: dict | None = None,
     return out
 
 
+def _made(ann: str, names: list[str], producers: dict | None, limit: int = 4) -> list[str]:
+    """Producer expressions for this annotation. A producer returning `bytes`
+    fills a parameter annotated `str | bytes`, which is how half of a typed
+    codebase is written."""
+    if not producers:
+        return []
+    out = list(producers.get(ann, []))
+    for k, v in producers.items():
+        if k != ann and k in names:
+            out += v
+    return out[:limit]
+
+
 def _values(ann: str, ctors: dict | None = None,
             producers: dict | None = None) -> list[str] | None:
     if not ann:
         return UNTYPED
     names = re.findall(r"[A-Za-z_][A-Za-z0-9_]*", ann)
     optional = "None" in names or "Optional" in names
-    made = (producers or {}).get(ann, [])
+    made = _made(ann, names, producers)
     for n in names:
         if n.lower() in CORPUS:
             vals = list(CORPUS[n.lower()]) + made
