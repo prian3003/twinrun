@@ -35,6 +35,11 @@ def fmt(m: Money) -> str:
     return "$%s" % (m.cents // 100)
 
 
+def where() -> str:
+    import os
+    return os.getcwd()
+
+
 def area(w: int) -> int:
     return w * w
 
@@ -81,6 +86,12 @@ class Money:
 
 def fmt(m: Money) -> str:
     return "$%s" % (m.cents / 100)                 # project-typed parameter
+
+
+def where() -> str:
+    import os
+    cwd = os.getcwd()                             # rewritten, same behaviour
+    return cwd
 
 
 def area(w: int, h: int = 2) -> int:              # appended an optional parameter
@@ -162,10 +173,11 @@ def main():
     # things that must stay quiet
     assert "slug" not in hit, "equivalent rewrite reported as a delta"
     assert "jitter" not in hit, "non-deterministic function reported as a delta"
+    assert "where" not in hit, "the two checkout paths reported as a behaviour delta"
     assert rep.flaky > 0, "flake filter never fired on a random() function"
     assert "Cart.__init__" in skipped, "constructor should be skipped with a reason"
 
-    assert rep.checked == 8, f"expected 8 callables twin-run, got {rep.checked}"
+    assert rep.checked == 9, f"expected 9 callables twin-run, got {rep.checked}"
 
     groups = cluster(rep.deltas)
     assert len(groups) < len(rep.deltas), "clustering collapsed nothing"

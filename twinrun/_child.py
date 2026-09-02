@@ -18,8 +18,16 @@ from pathlib import Path
 
 LIMIT = 2000
 
+# The two revisions are checked out at different paths, so anything that surfaces
+# its own location -- a cwd, a __file__, a path in an error message -- would differ
+# for a reason that has nothing to do with the change. Both roots collapse to the
+# same placeholder before anything is compared.
+ROOTS = []
+
 
 def cap(s):
+    for r in ROOTS:
+        s = s.replace(r, "<repo>")
     return s if len(s) <= LIMIT else s[:LIMIT] + f"...<{len(s)} chars total>"
 
 
@@ -112,9 +120,11 @@ def main():
     payload = json.load(sys.stdin)
     out = Path(payload["out"])
     try:
+        root = Path(payload["root"])
+        ROOTS.extend(sorted({str(root), str(root.resolve())}, key=len, reverse=True))
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
-            mod = load(Path(payload["root"]), payload["file"])
+            mod = load(root, payload["file"])
         env = dict(vars(mod))
         env["__builtins__"] = builtins
         results = [call(mod, env, payload, a) for a in payload["probes"]]

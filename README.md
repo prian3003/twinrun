@@ -50,7 +50,11 @@ Exits 1 when there is a finding, 2 on a usage error, so it drops into CI as-is.
    a subprocess on each side with the same inputs. Return value, type, exception,
    stdout, argument mutation and instance state are all recorded. A method that
    returns `None` and quietly changes `self` is the common case, not an edge case.
-4. **Flake filter** — every probe runs twice per side. If a side disagrees with
+4. **Normalise** — the two revisions are checked out at different paths, so
+   anything that surfaces its own location (a cwd, a `__file__`, a path inside an
+   error message) would differ for a reason that has nothing to do with the
+   change. Both checkout roots collapse to `<repo>` before anything is compared.
+5. **Flake filter** — every probe runs twice per side. If a side disagrees with
    itself the probe is non-deterministic, and it is dropped rather than reported.
    Clocks, RNG, hash ordering and network calls come out here.
 
