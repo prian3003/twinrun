@@ -1,6 +1,5 @@
-"""Self-check. Builds a throwaway repo with three kinds of change and asserts
-twinrun tells them apart: a real behaviour change, an equivalent rewrite, and a
-non-deterministic function.
+"""Self-check. Builds a throwaway repo containing every kind of change twinrun
+has to tell apart, and asserts it tells them apart.
 
 Run: python3 test_twinrun.py
 """
@@ -11,7 +10,7 @@ import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from twinrun.core import verify
+from twinrun.core import cluster, verify
 
 BASE = '''
 def discount(price: int, pct: int) -> int:
@@ -24,22 +23,54 @@ def slug(name: str) -> str:
 
 def jitter(n: int) -> int:
     import random
-    return n + random.randint(0, 5)
+    return n + random.random()
+
+
+class Cart:
+    def __init__(self, rate: int):
+        self.rate = rate
+        self.items = []
+
+    def add(self, price: int) -> None:
+        self.items.append(price)
+
+    def total(self) -> int:
+        return sum(self.items) * (100 + self.rate) // 100
+
+    @staticmethod
+    def parse(raw: str) -> int:
+        return int(raw or 0)
 '''
 
 HEAD = '''
 def discount(price: int, pct: int) -> int:
-    return price - price * pct / 100          # behaviour change: int -> float
+    return price - price * pct / 100              # int -> float
 
 
 def slug(name: str) -> str:
-    s = name.strip().lower()                  # equivalent rewrite
+    s = name.strip().lower()                      # equivalent rewrite
     return s.replace(" ", "-")
 
 
 def jitter(n: int) -> int:
     import random
-    return n + random.randint(0, 6)           # non-deterministic, unverifiable
+    return n + random.random() * 2               # non-deterministic
+
+
+class Cart:
+    def __init__(self, rate: int):
+        self.rate = rate
+        self.items = list()                       # rewritten, same behaviour
+
+    def add(self, price: int) -> None:
+        self.items.append(price * 2)              # mutation only, returns None
+
+    def total(self) -> int:
+        return sum(self.items) * (100 + self.rate) / 100
+
+    @staticmethod
+    def parse(raw: str) -> int:
+        return int(raw.strip() or 0)              # ValueError -> 0 on blank
 '''
 
 
@@ -48,8 +79,7 @@ def git(repo, *args):
 
 
 def fixture(root: Path):
-    git_init = ["git", "init", "-q", "-b", "main", str(root)]
-    subprocess.run(git_init, check=True, capture_output=True)
+    subprocess.run(["git", "init", "-q", "-b", "main", str(root)], check=True, capture_output=True)
     git(root, "config", "user.email", "dev@example.com")
     git(root, "config", "user.name", "dev")
     (root / "calc.py").write_text(BASE)
@@ -68,18 +98,41 @@ def main():
         rep = verify(repo, "HEAD~1", "HEAD", limit=24)
 
     hit = {d.qualname for d in rep.deltas}
-    assert "discount" in hit, f"missed the real behaviour change; deltas={hit}"
+    skipped = dict(rep.skipped)
+
+    # real behaviour changes, one per shape
+    assert "discount" in hit, f"missed the plain-function change; found {hit}"
+    assert "Cart.total" in hit, f"missed the instance-method change; found {hit}"
+    assert "Cart.parse" in hit, f"missed the staticmethod change; found {hit}"
+    assert "Cart.add" in hit, f"missed the mutation-only change; found {hit}"
+
+    # a mutation-only method returns None on both sides: the finding has to come
+    # from the recorded instance state, not the return value
+    add = next(d for d in rep.deltas if d.qualname == "Cart.add")
+    assert add.base["value"] == add.head["value"] == "None"
+    assert add.base["mutated"] != add.head["mutated"], "state change not recorded"
+
+    # things that must stay quiet
     assert "slug" not in hit, "equivalent rewrite reported as a delta"
     assert "jitter" not in hit, "non-deterministic function reported as a delta"
     assert rep.flaky > 0, "flake filter never fired on a random() function"
-    assert rep.checked == 3, f"expected 3 functions twin-run, got {rep.checked}"
+    assert "Cart.__init__" in skipped, "constructor should be skipped with a reason"
 
-    d = next(d for d in rep.deltas if d.qualname == "discount")
-    assert d.base["value"] != d.head["value"]
+    assert rep.checked == 6, f"expected 6 callables twin-run, got {rep.checked}"
 
-    print(f"ok  {len(rep.deltas)} deltas, {rep.probes} probes, {rep.flaky} flaky, "
-          f"{rep.checked} checked")
-    print(f"    e.g. discount({', '.join(d.args)})  {d.base['value']} -> {d.head['value']}")
+    groups = cluster(rep.deltas)
+    assert len(groups) < len(rep.deltas), "clustering collapsed nothing"
+    per_name = {}
+    for g in groups:
+        per_name.setdefault(g[0].qualname, 0)
+        per_name[g[0].qualname] += 1
+    assert per_name["discount"] == 1, f"one root cause split into {per_name['discount']} findings"
+
+    print(f"ok  {len(groups)} findings from {len(rep.deltas)} deltas, "
+          f"{rep.probes} probes, {rep.flaky} flaky, {rep.checked} checked")
+    for g in groups:
+        d = g[0]
+        print(f"    {d.qualname:<14} {d.base['type']:>8} -> {d.head['type']:<8} ({len(g)} calls)")
 
 
 if __name__ == "__main__":

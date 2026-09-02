@@ -1,8 +1,10 @@
-"""Runs inside one worktree. Import target module, call one function over N probes,
-write results to a file. Never writes results to stdout -- the target may print.
+"""Runs inside one worktree. Import the target module, call one callable over N
+probes, write results to a file. Results never go to stdout -- the target may print.
 
-Protocol (stdin, JSON): {root, file, qualname, probes: [[argsrc, ...], ...], out}
-Output (file at `out`, JSON): {"results": [...]} | {"error": "..."}
+Protocol (stdin, JSON):
+    {root, file, qualname, kind, n_ctor, probes: [[argsrc, ...], ...], out}
+Output (file at `out`, JSON):
+    {"results": [...]} | {"error": "..."}
 """
 
 import builtins
@@ -22,8 +24,8 @@ def cap(s):
 
 
 def load(root: Path, relfile: str):
-    """Import module at root/relfile. Uses dotted import when it lives in a package,
-    so relative imports inside it still resolve."""
+    """Import module at root/relfile. Uses a dotted import when it lives inside a
+    package, so relative imports in it still resolve."""
     p = (root / relfile).resolve()
     parts = [p.stem]
     d = p.parent
@@ -47,18 +49,63 @@ def safe_repr(v):
         return f"<repr raised {type(e).__name__}>"
 
 
-def call(fn, argsrc):
+def state_of(obj):
+    """Instance attributes after the call. Methods that mutate and return None
+    are invisible without this."""
+    try:
+        return safe_repr(sorted(vars(obj).items()))
+    except BaseException:
+        return ""
+
+
+def result(kind, value, type_name, stdout="", mutated=""):
+    return {"kind": kind, "value": cap(value), "type": type_name,
+            "stdout": cap(stdout), "mutated": cap(mutated)}
+
+
+def call(mod, payload, argsrc):
+    kind, qualname, n_ctor = payload["kind"], payload["qualname"], payload["n_ctor"]
     buf = io.StringIO()
     try:
-        args = [eval(a, {"__builtins__": builtins}) for a in argsrc]
+        vals = [eval(a, {"__builtins__": builtins}) for a in argsrc]
     except BaseException as e:
-        return {"kind": "probe-error", "value": f"{type(e).__name__}: {e}", "stdout": ""}
+        return result("probe-error", f"{type(e).__name__}: {e}", "probe-error")
+    ctor_args, args = vals[:n_ctor], vals[n_ctor:]
+
+    owner = mod
+    name = qualname
+    if "." in qualname:
+        cls_name, name = qualname.split(".", 1)
+        owner = getattr(mod, cls_name)
+
+    inst = None
+    try:
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+            if kind == "instance":
+                inst = owner(*ctor_args)          # fresh instance per probe
+                fn = getattr(inst, name)
+            else:
+                fn = getattr(owner, name)
+    except BaseException as e:
+        return result("setup-raise", f"{type(e).__name__}: {e}",
+                      type(e).__name__, buf.getvalue())
+
+    before = [safe_repr(a) for a in args]
     try:
         with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
             r = fn(*args)
-        return {"kind": "return", "value": cap(safe_repr(r)), "stdout": cap(buf.getvalue())}
+        out = result("return", safe_repr(r), type(r).__name__, buf.getvalue())
     except BaseException as e:
-        return {"kind": "raise", "value": cap(f"{type(e).__name__}: {e}"), "stdout": cap(buf.getvalue())}
+        out = result("raise", f"{type(e).__name__}: {e}", type(e).__name__, buf.getvalue())
+
+    after = [safe_repr(a) for a in args]
+    marks = []
+    if after != before:
+        marks.append("args=" + safe_repr(after))
+    if inst is not None:
+        marks.append("self=" + state_of(inst))
+    out["mutated"] = cap(" ".join(marks))
+    return out
 
 
 def main():
@@ -68,8 +115,7 @@ def main():
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
             mod = load(Path(payload["root"]), payload["file"])
-            fn = getattr(mod, payload["qualname"])
-        results = [call(fn, a) for a in payload["probes"]]
+        results = [call(mod, payload, a) for a in payload["probes"]]
         out.write_text(json.dumps({"results": results}))
     except BaseException as e:
         out.write_text(json.dumps({"error": f"{type(e).__name__}: {e}"}))

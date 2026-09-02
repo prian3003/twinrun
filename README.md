@@ -1,71 +1,101 @@
 # twinrun
 
-Run the old and the new version of a changed function on identical inputs, and
-report where the outputs differ.
+Run the old and the new version of changed code on identical inputs, and report
+where the outputs differ.
 
 The old code is the oracle. You don't write a specification, you don't write
-assertions, and there is nothing to configure — if the behaviour of a function
+assertions, and there is nothing to configure — if the behaviour of something
 changed and you didn't mean it to, twinrun shows you the exact call that proves it.
 
 ```
-$ twinrun . --base HEAD~1 --head HEAD
-twinrun HEAD~1..HEAD
+$ twinrun . --base main --head HEAD
+twinrun main..HEAD
 
-  DELTA  billing/calc.py :: discount(0, 7)
-         base  return       0
-         head  return       0.0
+  DELTA  billing/cart.py :: Cart.total   +7 more calls
+         Cart(0).total()
+         base  return       int        0
+               after  self=[('items', []), ('rate', 0)]
+         head  return       float      0.0
+               after  self=[('items', []), ('rate', 0)]
 
-1 delta · 3 functions checked · 8 probes · 4 flaky dropped
+  DELTA  billing/cart.py :: Cart.add     +21 more calls
+         Cart(0).add(1)
+         base  return       NoneType   None
+               after  self=[('items', [1]), ('rate', 0)]
+         head  return       NoneType   None
+               after  self=[('items', [2]), ('rate', 0)]
+
+2 findings from 30 calls · 6 callables checked · 72 probes · 8 flaky dropped
 ```
 
-Exits 1 when there is a delta, so it drops into CI as-is.
+Exits 1 when there is a finding, 2 on a usage error, so it drops into CI as-is.
 
 ## How it works
 
-1. **Blast radius** — diff the two revisions, parse both sides, keep the
-   module-level functions whose AST actually changed. Comment and formatting
-   changes never reach step 2.
+1. **Blast radius** — diff the two revisions, parse both sides, keep the callables
+   whose AST actually changed. Comment and formatting changes never reach step 2.
 2. **Probes** — build inputs from each parameter's type annotation, using a small
-   corpus of edge values (`0`, `-1`, `2**31`, `''`, `float('nan')`, `[]`, …).
-3. **Twin run** — check out both revisions as git worktrees and call the function
-   in a subprocess on each side with the same inputs. Return value, exception and
-   stdout are all recorded.
+   corpus of edge values (`0`, `-1`, `2**31`, `''`, `float('nan')`, `[]`, …). For a
+   method, the constructor's parameters are probed in the same sweep, so the
+   instance is part of the input.
+3. **Twin run** — check out both revisions as git worktrees and call the target in
+   a subprocess on each side with the same inputs. Return value, type, exception,
+   stdout, argument mutation and instance state are all recorded. A method that
+   returns `None` and quietly changes `self` is the common case, not an edge case.
 4. **Flake filter** — every probe runs twice per side. If a side disagrees with
-   itself, the probe is non-deterministic, and it is dropped rather than reported.
+   itself the probe is non-deterministic, and it is dropped rather than reported.
    Clocks, RNG, hash ordering and network calls come out here.
-5. **Diff** — what survives and differs between base and head is a delta.
+
+   Two runs catch noise with a wide range of outcomes. A target that returns one
+   of only a handful of values can still agree with itself by chance — roughly a
+   one-in-six coin flip stays quiet about 17% of the time — so raise `--repeats`
+   when you are verifying something like that.
+5. **Cluster** — one root cause is one finding. Thirty calls that all differ
+   `int → float` are reported once, with a count.
 
 ## Install
 
 ```
-pip install -e .
+make install        # pip install -e .
 ```
 
 No dependencies. Python 3.10+.
 
-## Options
+## Use
+
+```
+make all                                  # self-check, then twinrun on its own last commit
+make demo REPO=~/work/api BASE=main HEAD=my-branch
+twinrun ~/work/api --base main --head my-branch
+```
 
 | flag | default | meaning |
 |---|---|---|
 | `--base` | `HEAD~1` | revision treated as the oracle |
 | `--head` | `HEAD` | revision under test |
-| `--limit` | `24` | max probes per function |
-| `--timeout` | `20` | seconds per side, per function |
+| `--limit` | `24` | max probes per callable |
+| `--timeout` | `20` | seconds per side, per callable |
 | `--seed` | `0` | probe sampling seed |
+| `--repeats` | `2` | runs per side used to detect non-determinism |
+
+CI runs the self-check on 3.10/3.12/3.13, and on every pull request twinrun
+verifies that pull request against its own base branch.
+
+## What it covers
+
+Module-level functions, instance methods, `@staticmethod` and `@classmethod`.
+
+Skipped, with the reason printed: `async def`, other decorators, `*args`/`**kwargs`,
+`__init__` (observed through the instance state its methods report), and parameters
+annotated with a type it can't build a value for. Untyped parameters get a generic
+spread, which usually lands on `TypeError` identically on both sides and reports
+nothing.
 
 ## Limits today
 
-Skipped with a reason printed: methods, `async def`, decorated functions,
-`*args`/`**kwargs`, and parameters annotated with a type it can't build a value
-for. Untyped parameters get a generic spread, which mostly lands on `TypeError`
-on both sides and reports nothing.
-
 Probes run your code for real. There is no sandbox yet, so a function that writes
-files or hits the network will do that, twice per side. Point it at a repo you
-would run the test suite of.
+files or hits the network will do that, twice per side. Point it at a repo whose
+test suite you would already run.
 
-Deltas are not yet grouped — one root cause can produce one line per probe.
-
-```
-python3 test_twinrun.py
-```
+The probe corpus is fixed. It finds changes that a boring edge value reaches, and
+misses changes that need a specific structured input.
