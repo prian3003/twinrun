@@ -391,7 +391,7 @@ def changed_functions(repo, base, head, include_tests: bool = False) -> list[Cha
         bt, ht = _targets(b), _targets(h)
         pairs = sorted(set(bt) & set(ht))
         hit = [q for q in pairs if ast.dump(bt[q][0]) != ast.dump(ht[q][0])]
-        seen[f] = (h, bt, ht, pairs, hit)
+        seen[f] = (b, h, bt, ht, pairs, hit)
         moved |= set(hit) | {q.rsplit(".", 1)[-1] for q in hit}
 
     if not moved:
@@ -399,11 +399,16 @@ def changed_functions(repo, base, head, include_tests: bool = False) -> list[Cha
     fixtures = _fixtures(repo, head, moved)
     tree_cache = {}
 
-    for f, (h, bt, ht, pairs, hit) in seen.items():
+    for f, (b, h, bt, ht, pairs, hit) in seen.items():
         if not hit:
             continue
-        sibs = _siblings(repo, head, f, tree_cache)
-        ctors = _ctor_map([h] + [x for x in sibs if x != h])
+        # Producers are read from the base revision, never the head one. A
+        # function that only exists in head raises NameError on one side and
+        # returns a value on the other, which is a delta on every callable that
+        # consumes its type -- a false positive machine. Anything present in
+        # base and absent from `moved` is identical in both.
+        sibs = _siblings(repo, base, f, tree_cache)
+        ctors = _ctor_map([b] + [x for x in sibs if x != b])
 
         # Extracting a helper leaves its callers byte-identical while their
         # behaviour moves underneath them. Probe one level of those too: the
@@ -413,14 +418,14 @@ def changed_functions(repo, base, head, include_tests: bool = False) -> list[Cha
         callers = [q for q in pairs
                    if q not in hit and _refs(ht[q][0]) & tails][:CALLER_LIMIT]
 
-        made = _producers(h, moved, ctors, fixtures)
+        made = _producers(b, moved, ctors, fixtures)
 
         # The producer is often in the module the consumer imported it from:
         # timed.py takes what signer.py signs. Read the siblings this file
         # actually imports from, and keep only what it can name.
-        bound = _imported(h)
+        bound = _imported(b)
         for sib in sibs:
-            if sib == h:
+            if sib == b:
                 continue
             for ann, exprs in _producers(sib, moved, ctors, fixtures).items():
                 for ident, e in exprs:

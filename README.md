@@ -49,7 +49,10 @@ Exits 1 when there is a finding, 2 on a usage error, so it drops into CI as-is.
    aliases are expanded, an inherited `__init__` is resolved to the base class
    that defines it, and long string and bytes literals from the repository's own
    tests are used as inputs: nobody's edge-value corpus produces a validly
-   signed payload, and the test suite is full of them. Anything that changed is excluded, directly or by
+   signed payload, and the test suite is full of them. Producers are read from
+   the base revision only. A function that exists solely in head would raise
+   `NameError` on one side and return a value on the other, which is a delta on
+   every callable that consumes its type. Anything that changed is excluded, directly or by
    reference: a producer whose own behaviour moved would hand the two sides
    different inputs, and then nothing being compared means anything.
 4. **Probes** — build inputs from each parameter's type, using a small
