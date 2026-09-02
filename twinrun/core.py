@@ -145,6 +145,39 @@ def _class_ctors(src: str) -> dict[str, list]:
     return out
 
 
+def _ctor_map(srcs) -> dict[str, list]:
+    """Constructor parameters for every class in a package, with an inherited
+    __init__ resolved to the base class that defines it. TimestampSigner takes
+    its constructor from Signer in another module; without this it is built
+    with no arguments at all, and every probe dies in setup."""
+    own, bases = {}, {}
+    for src in srcs:
+        try:
+            tree = ast.parse(src)
+        except SyntaxError:
+            continue
+        al = _aliases(tree)
+        for n in tree.body:
+            if not isinstance(n, ast.ClassDef):
+                continue
+            bases[n.name] = [ast.unparse(b).split(".")[-1] for b in n.bases]
+            init = _init_of(n)
+            if init is not None:
+                own[n.name] = None if _bad_sig(init) else [
+                    (name, _expand(ann, al)) for name, ann in _sig_params(init, True)]
+    out = dict(own)
+    for cls in bases:
+        cur, seen = cls, set()
+        while cls not in out and cur in bases and cur not in seen:
+            seen.add(cur)
+            cur = next((b for b in bases[cur] if b in bases), None)
+            if cur is None:
+                break
+            if cur in own:
+                out[cls] = own[cur]
+    return {k: v for k, v in out.items() if v is not None}
+
+
 def _decorators(node) -> set[str]:
     return {ast.unparse(d).split("(")[0].split(".")[-1] for d in node.decorator_list}
 
@@ -278,6 +311,62 @@ def _refs(node) -> set[str]:
     return out
 
 
+def _fixtures(repo, head, wanted: set[str], per_type: int = 6,
+              min_len: int = 12, max_len: int = 400) -> dict[str, list[str]]:
+    """Long string and bytes literals from the repository's own tests.
+
+    No corpus of edge values will produce "value.TgPVoaGhoQ.AGBfQ6G6cr07byTRt0z"
+    -- a signed payload whose timestamp is years old. The test suite is full of
+    inputs like it, written by someone who knew what a valid one looks like, and
+    they are literals, so both sides get the identical value by construction.
+
+    Only tests that mention something that changed are read.
+    """
+    out = {}
+    for f in git(repo, "ls-tree", "-r", "--name-only", head).split("\n"):
+        if not f.endswith(".py") or not is_test_path(f):
+            continue
+        src = git(repo, "show", f"{head}:{f}", check=False)
+        if not src or not (wanted & set(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", src))):
+            continue
+        try:
+            tree = ast.parse(src)
+        except SyntaxError:
+            continue
+        for n in ast.walk(tree):
+            if not isinstance(n, ast.Constant) or not isinstance(n.value, (str, bytes)):
+                continue
+            if not min_len <= len(n.value) <= max_len:
+                continue
+            key = "str" if isinstance(n.value, str) else "bytes"
+            got = out.setdefault(key, [])
+            src_text = repr(n.value)
+            if src_text not in got and len(got) < per_type:
+                got.append(src_text)
+    return out
+
+
+SIBLING_LIMIT = 12          # modules read from a package to look for producers
+
+
+def _imported(src: str) -> set[str]:
+    """Names the module has bound by importing them. A producer expression is
+    only worth emitting if the name it starts with resolves here."""
+    try:
+        tree = ast.parse(src)
+    except SyntaxError:
+        return set()
+    out = set()
+    for n in ast.walk(tree):
+        if isinstance(n, (ast.Import, ast.ImportFrom)):
+            out |= {a.asname or a.name.split(".")[0] for a in n.names}
+    return out
+
+
+def _head(expr: str) -> str:
+    return expr.split("(")[0].split(".")[0]
+
+
 def changed_functions(repo, base, head, include_tests: bool = False) -> list[Change]:
     """Callables present in both revisions whose AST differs.
 
@@ -285,8 +374,13 @@ def changed_functions(repo, base, head, include_tests: bool = False) -> list[Cha
     twin has nothing to be compared against.
     """
     out = []
-    names = git(repo, "diff", "--name-only", base, head).split("\n")
-    for f in [n for n in names if n.endswith(".py")]:
+    names = [n for n in git(repo, "diff", "--name-only", base, head).split("\n")
+             if n.endswith(".py")]
+
+    # What moved, across every changed file. A producer that changed anywhere is
+    # unusable everywhere: it would hand the two sides different inputs.
+    seen, moved = {}, set()
+    for f in names:
         if not include_tests and is_test_path(f):
             out.append(Change(f, f, skip="test file, pass --include-tests to probe it"))
             continue
@@ -295,9 +389,21 @@ def changed_functions(repo, base, head, include_tests: bool = False) -> list[Cha
         if not b or not h:
             continue
         bt, ht = _targets(b), _targets(h)
-        ctors = {k: v for k, v in _class_ctors(h).items() if v is not None}
         pairs = sorted(set(bt) & set(ht))
         hit = [q for q in pairs if ast.dump(bt[q][0]) != ast.dump(ht[q][0])]
+        seen[f] = (h, bt, ht, pairs, hit)
+        moved |= set(hit) | {q.rsplit(".", 1)[-1] for q in hit}
+
+    if not moved:
+        return out
+    fixtures = _fixtures(repo, head, moved)
+    tree_cache = {}
+
+    for f, (h, bt, ht, pairs, hit) in seen.items():
+        if not hit:
+            continue
+        sibs = _siblings(repo, head, f, tree_cache)
+        ctors = _ctor_map([h] + [x for x in sibs if x != h])
 
         # Extracting a helper leaves its callers byte-identical while their
         # behaviour moves underneath them. Probe one level of those too: the
@@ -307,8 +413,23 @@ def changed_functions(repo, base, head, include_tests: bool = False) -> list[Cha
         callers = [q for q in pairs
                    if q not in hit and _refs(ht[q][0]) & tails][:CALLER_LIMIT]
 
-        moved = set(hit) | {q.rsplit(".", 1)[-1] for q in hit}
-        made = _producers(h, moved, ctors)
+        made = _producers(h, moved, ctors, fixtures)
+
+        # The producer is often in the module the consumer imported it from:
+        # timed.py takes what signer.py signs. Read the siblings this file
+        # actually imports from, and keep only what it can name.
+        bound = _imported(h)
+        for sib in sibs:
+            if sib == h:
+                continue
+            for ann, exprs in _producers(sib, moved, ctors, fixtures).items():
+                for ident, e in exprs:
+                    if _head(e) in bound:
+                        _produced(made, ann, ident, e, per_type=8)
+
+        for k, v in fixtures.items():
+            made.setdefault(k, []).extend(("fixture", e) for e in v)
+        made = {k: [e for _, e in v] for k, v in made.items()}
         for qual in hit + callers:
             ch = _describe(f, qual, *ht[qual], *bt[qual])
             ch.ctors, ch.producers = ctors, made
@@ -316,11 +437,30 @@ def changed_functions(repo, base, head, include_tests: bool = False) -> list[Cha
     return out
 
 
+def _siblings(repo, head, f: str, cache: dict) -> list[str]:
+    """Sources of the other modules in this file's directory."""
+    d = f.rsplit("/", 1)[0] if "/" in f else ""
+    if d in cache:
+        return cache[d]
+    listed = git(repo, "ls-tree", "--name-only", f"{head}:{d}" if d else head).split("\n")
+    srcs = []
+    for n in listed[:SIBLING_LIMIT * 3]:
+        if not n.endswith(".py") or is_test_path(n):
+            continue
+        src = git(repo, "show", f"{head}:{d}/{n}" if d else f"{head}:{n}", check=False)
+        if src:
+            srcs.append(src)
+        if len(srcs) >= SIBLING_LIMIT:
+            break
+    cache[d] = srcs
+    return srcs
+
+
 # --------------------------------------------------------------------------
 # probes
 # --------------------------------------------------------------------------
 
-def _ctor_exprs(name: str, ctors: dict, limit: int = 3) -> list[str]:
+def _ctor_exprs(name: str, ctors: dict, limit: int = 3, aliases: dict | None = None) -> list[str]:
     """Source expressions that build an instance of a local class. One level
     deep: a constructor that itself wants a project type falls back to a
     no-argument call, which fails identically on both sides and so reports
@@ -330,48 +470,128 @@ def _ctor_exprs(name: str, ctors: dict, limit: int = 3) -> list[str]:
         return [f"{name}()"]
     cols = []
     for pname, pann in params:
-        v = _values(pann)               # no ctors: depth stops here
+        v = _values(_expand(pann, aliases or {}))    # no ctors: depth stops here
         if v is None:
             return [f"{name}()"]
-        cols.append(v[:3])
+        cols.append(v)
     out = []
-    for combo in itertools.product(*cols):
-        out.append(f"{name}({', '.join(combo)})")
-        if len(out) >= limit:
-            break
+    # One variant per corpus index rather than the product: a constructor that
+    # rejects the empty string usually accepts the value next to it, and the
+    # product only ever varies the last parameter.
+    for i in range(limit):
+        out.append("%s(%s)" % (name, ", ".join(c[i % len(c)] for c in cols)))
+    return list(dict.fromkeys(out))
+
+
+def _is_type_expr(n) -> bool:
+    """A syntactic test for something written as a type. Cheaper and stricter
+    than guessing from the names in it: `_t_secret_key` is built out of other
+    aliases and mentions no builtin at all."""
+    if isinstance(n, ast.Name):
+        return True
+    if isinstance(n, (ast.Attribute, ast.Subscript)):
+        return _is_type_expr(n.value)
+    if isinstance(n, ast.BinOp) and isinstance(n.op, ast.BitOr):
+        return _is_type_expr(n.left) and _is_type_expr(n.right)
+    if isinstance(n, ast.Constant):
+        return n.value is None
+    if isinstance(n, (ast.Tuple, ast.List)):
+        return bool(n.elts) and all(_is_type_expr(e) for e in n.elts)
+    return False
+
+
+def _aliases(tree) -> dict[str, str]:
+    """Module-level type aliases. Typed code is full of `_t_str_bytes = str |
+    bytes`, and left unexpanded it reads as a project type nobody can build --
+    and never matches the `str | bytes` the interpreter reports for the
+    parameter that consumes it."""
+    out = {}
+    for n in tree.body:
+        if isinstance(n, ast.Assign) and len(n.targets) == 1 \
+                and isinstance(n.targets[0], ast.Name):
+            name, value = n.targets[0].id, n.value
+        elif isinstance(n, ast.AnnAssign) and isinstance(n.target, ast.Name) \
+                and n.value is not None:
+            name, value = n.target.id, n.value
+        else:
+            continue
+        try:
+            text = ast.unparse(value)
+        except Exception:
+            continue
+        if _is_type_expr(value):
+            out[name] = text
     return out
+
+
+# Names that describe a type without being one. The type in Optional[Signer] is
+# Signer, and the module qualifier in t.Optional is not a type at all.
+TYPING = {"Optional", "Union", "List", "Dict", "Tuple", "Set", "Sequence",
+          "Iterable", "Iterator", "Mapping", "Callable", "Type", "Final",
+          "Annotated", "Literal", "ClassVar", "None"}
+QUALIFIER = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*\.")
+
+
+def _expand(ann: str, aliases: dict, depth: int = 4) -> str:
+    """Substitute aliases wherever they appear, not just when the whole
+    annotation is one: _t_secret_key is written in terms of _t_str_bytes."""
+    for _ in range(depth):
+        nxt = re.sub(r"[A-Za-z_][A-Za-z0-9_]*",
+                     lambda m: aliases.get(m.group(0), m.group(0)), ann)
+        if nxt == ann:
+            break
+        ann = nxt
+    return ann
 
 
 def _corpus_typed(ann: str) -> bool:
     """True when the corpus can fill this parameter without inventing a type."""
     if not ann:
         return True
-    return any(n.lower() in CORPUS for n in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", ann))
+    names = re.findall(r"[A-Za-z_][A-Za-z0-9_]*", QUALIFIER.sub("", ann))
+    return any(n.lower() in CORPUS or n == "Any" for n in names)
 
 
-def _produced(out, ann, expr, per_type):
+def _produced(out, ann, ident, expr, per_type):
+    """Budget producers by identity, not by expression. Two classes overriding
+    sign() are two producers worth trying; the third class implementing
+    get_signature() is not a third idea, and letting it fill the budget crowds
+    out the producer that was actually worth calling."""
     got = out.setdefault(ann, [])
+    if any(e == expr for _, e in got):
+        return
+    method = ident.rsplit(".", 1)[-1]
+    if len({i for i, _ in got if i.rsplit(".", 1)[-1] == method} - {ident}) >= 2:
+        return
     if len(got) < per_type:
-        got.append(expr)
+        got.append((ident, expr))
 
 
-def _args_from(params, drop_first: bool):
-    """Corpus arguments for a producer's own parameters, or None if one of them
-    needs a type the corpus cannot fill -- a producer is only worth calling when
-    calling it is trivial."""
-    args = []
+def _args_from(params, drop_first: bool, fixtures: dict | None = None,
+               aliases: dict | None = None):
+    """Argument lists for calling a producer, or nothing when one of its own
+    parameters needs a type the corpus cannot fill -- a producer is only worth
+    calling when calling it is trivial.
+
+    Two lists at most: one from the corpus, and one that feeds the producer a
+    fixture from the test suite. Interesting products come from interesting
+    inputs, and the test suite is where those live."""
+    plain, fixed = [], []
     for pname, pann in params[1:] if drop_first else params:
+        pann = _expand(pann, aliases or {})
         if not _corpus_typed(pann):
-            return None
+            return []
         vals = _values(pann)
         if not vals:
-            return None
-        args.append(vals[0])
-    return args
+            return []
+        plain.append(vals[0])
+        f = _made(pann, re.findall(r"[A-Za-z_][A-Za-z0-9_]*", pann), fixtures, 1)
+        fixed.append(f[0] if f else vals[0])
+    return [plain] if plain == fixed else [plain, fixed]
 
 
 def _producers(src: str, exclude: set[str], ctors: dict | None = None,
-               per_type: int = 2) -> dict[str, list[str]]:
+               fixtures: dict | None = None, per_type: int = 4) -> dict[str, list[str]]:
     """Module functions that make a value of some type, as call expressions.
 
     A corpus of edge values cannot build a signed token, a parsed config or an
@@ -387,15 +607,15 @@ def _producers(src: str, exclude: set[str], ctors: dict | None = None,
     except SyntaxError:
         return {}
     out = {}
+    al = _aliases(tree)
     for n in tree.body:
         if isinstance(n, ast.FunctionDef):
             if n.returns is None or n.name in exclude:
                 continue
             if _bad_sig(n) or _refs(n) & exclude:
                 continue
-            args = _args_from(_sig_params(n, False), False)
-            if args is not None:
-                _produced(out, ast.unparse(n.returns),
+            for args in _args_from(_sig_params(n, False), False, fixtures, al):
+                _produced(out, _expand(ast.unparse(n.returns), al), n.name,
                           "%s(%s)" % (n.name, ", ".join(args)), per_type)
 
         # Most real code puts the producer on the same class as the consumer:
@@ -404,7 +624,9 @@ def _producers(src: str, exclude: set[str], ctors: dict | None = None,
         elif isinstance(n, ast.ClassDef) and ctors:
             if n.name not in ctors or f"{n.name}.__init__" in exclude:
                 continue
-            inst = _ctor_exprs(n.name, ctors, limit=1)[0]
+            # Two constructions, not one: plenty of constructors reject the
+            # empty string outright and take the value next to it.
+            insts = _ctor_exprs(n.name, ctors, limit=2, aliases=al)
             for m in n.body:
                 if not isinstance(m, ast.FunctionDef) or m.returns is None:
                     continue
@@ -414,10 +636,12 @@ def _producers(src: str, exclude: set[str], ctors: dict | None = None,
                     continue
                 if _bad_sig(m) or _refs(m) & exclude:
                     continue
-                args = _args_from(_sig_params(m, False), True)
-                if args is not None:
-                    _produced(out, ast.unparse(m.returns),
-                              "%s.%s(%s)" % (inst, m.name, ", ".join(args)), per_type)
+                for args in _args_from(_sig_params(m, False), True, fixtures, al):
+                    for inst in insts:
+                        _produced(out, _expand(ast.unparse(m.returns), al),
+                                  "%s.%s" % (n.name, m.name),
+                                  "%s.%s(%s)" % (inst, m.name, ", ".join(args)),
+                                  per_type)
     return out
 
 
@@ -438,16 +662,20 @@ def _values(ann: str, ctors: dict | None = None,
             producers: dict | None = None) -> list[str] | None:
     if not ann:
         return UNTYPED
-    names = re.findall(r"[A-Za-z_][A-Za-z0-9_]*", ann)
+    names = re.findall(r"[A-Za-z_][A-Za-z0-9_]*", QUALIFIER.sub("", ann))
     optional = "None" in names or "Optional" in names
+    if "Any" in names:
+        return UNTYPED              # a type that says nothing gets the spread
     made = _made(ann, names, producers)
     for n in names:
         if n.lower() in CORPUS:
             vals = list(CORPUS[n.lower()]) + made
             return vals + ["None"] if optional else vals
-    if not names:
+    real = [n for n in names if n not in TYPING]
+    if not real:
         return None
-    head = names[0]
+    # Optional[Signer] is a Signer. Prefer a class this repository defines.
+    head = next((n for n in real if ctors and n in ctors), real[-1])
     if made:
         vals = made
     elif ctors is not None and head in ctors:

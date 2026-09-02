@@ -59,6 +59,9 @@ def fee(amount: int, *, minimum: int = 5) -> int:
     "shop/cart.py": '''
 from .pricing import line_total
 
+Cents = int
+Row = str
+
 
 class Cart:
     def __init__(self, rate: int):
@@ -74,17 +77,27 @@ class Cart:
         return sum(self.lines) + self.rate
 
 
-class Ledger:
+class Tagged:
     def __init__(self, tag: str):
         self.tag = tag
 
-    def encode(self, amount: int) -> str:
+
+class Ledger(Tagged):
+    def encode(self, amount: Cents) -> Row:
         return "%s:%d" % (self.tag, amount)
 
-    def decode(self, row: str) -> int:
+    def decode(self, row: Row) -> Cents:
         return int(row.split(":")[-1])
 ''',
 }
+
+REPORT = '''
+from .cart import Ledger
+
+
+def render(row: str) -> str:
+    return row.split(":")[0] or "-"
+'''
 
 TOKEN = '''
 import hashlib
@@ -221,6 +234,24 @@ STEPS = [
     ("refactor: read the ledger field from the front", "find", [
         ("shop/cart.py", '        return int(row.split(":")[-1])',
          '        return int(row.split(":")[0])'),
+    ]),
+    # A new module: nothing to compare against, so nothing is probed.
+    ("feat: render ledger rows", "quiet", [
+        ("shop/report.py", None, REPORT),
+    ]),
+    # The producer for this one is a method on a class in another module, whose
+    # constructor is inherited from a third class, and whose parameter and
+    # return types are both aliases. Every one of those has to resolve or the
+    # probe is a bare string with no colon in it, and both sides agree.
+    ("refactor: render the trailing ledger field", "find", [
+        ("shop/report.py", '    return row.split(":")[0] or "-"',
+         '    return row.split(":")[-1] or "-"'),
+    ]),
+    # Two files in one commit, one of them changing a constructor. Everything
+    # gathered in the first pass has to stay attached to the file it came from.
+    ("refactor: clamp the line and normalise the tag", "find", [
+        ("shop/pricing.py", "    return price * qty", "    return price * abs(qty)"),
+        ("shop/cart.py", "        self.tag = tag", "        self.tag = tag.strip()"),
     ]),
     ("chore: widen the order id", "flaky", [
         ("shop/token.py",

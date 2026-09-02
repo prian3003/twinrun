@@ -44,8 +44,12 @@ Exits 1 when there is a finding, 2 on a usage error, so it drops into CI as-is.
 3. **Producers** — a corpus of edge values cannot build a signed token or a parsed
    config, but the module that consumes one usually contains the function that
    makes one. Module functions and instance methods with a return annotation are
-   called to fill parameters of that type; a method's instance is built the same
-   one-level way a project-typed parameter is. Anything that changed is excluded, directly or by
+   called to fill parameters of that type, including from the sibling modules
+   this file imports from -- `timed.py` takes what `signer.py` signs. Type
+   aliases are expanded, an inherited `__init__` is resolved to the base class
+   that defines it, and long string and bytes literals from the repository's own
+   tests are used as inputs: nobody's edge-value corpus produces a validly
+   signed payload, and the test suite is full of them. Anything that changed is excluded, directly or by
    reference: a producer whose own behaviour moved would hand the two sides
    different inputs, and then nothing being compared means anything.
 4. **Probes** — build inputs from each parameter's type, using a small
@@ -140,7 +144,7 @@ at one level: a class whose `__init__` wants another project type falls back to 
 no-argument call. Caller propagation stops at one level too, and matches by name
 within a file rather than resolving the call graph.
 
-`sandbox.py` builds a repository whose answers are known — sixteen commits a
+`sandbox.py` builds a repository whose answers are known — nineteen commits a
 reviewer would wave through, some of which quietly change behaviour — and scores
 a sweep against them, including the cases that are meant to stay silent:
 
