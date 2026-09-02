@@ -41,7 +41,13 @@ Exits 1 when there is a finding, 2 on a usage error, so it drops into CI as-is.
    constructor actually take. The parse tree cannot see a constructor inherited
    from a base class in another module, cannot expand a type alias, and cannot
    resolve a string annotation; all three are ordinary in real code.
-3. **Probes** — build inputs from each parameter's type, using a small
+3. **Producers** — a corpus of edge values cannot build a signed token or a parsed
+   config, but the module that consumes one usually contains the function that
+   makes one. Module functions with a return annotation are called to fill
+   parameters of that type. Anything that changed is excluded, directly or by
+   reference: a producer whose own behaviour moved would hand the two sides
+   different inputs, and then nothing being compared means anything.
+4. **Probes** — build inputs from each parameter's type, using a small
    corpus of edge values (`0`, `-1`, `2**31`, `''`, `float('nan')`, `[]`, …). For a
    method, the constructor's parameters are probed in the same sweep, so the
    instance is part of the input.
@@ -55,17 +61,17 @@ Exits 1 when there is a finding, 2 on a usage error, so it drops into CI as-is.
    When that cannot be built the failure is identical on both sides, so a type it
    cannot model costs a probe and reports nothing. If nothing usable could be
    built at all, the callable is listed as skipped rather than counted as checked.
-4. **Twin run** — check out both revisions as git worktrees and call the target in
+5. **Twin run** — check out both revisions as git worktrees and call the target in
    a subprocess on each side with the same inputs. Return value, type, exception,
    stdout, argument mutation and instance state are all recorded. A method that
    returns `None` and quietly changes `self` is the common case, not an edge case.
-5. **Normalise** — the two revisions are checked out at different paths, so
+6. **Normalise** — the two revisions are checked out at different paths, so
    anything that surfaces its own location (a cwd, a `__file__`, a path inside an
    error message) would differ for a reason that has nothing to do with the
    change. Both checkout roots collapse to `<repo>` before anything is compared,
    and the address inside a default `repr` collapses with them — left in, it makes
    every object-valued result look non-deterministic.
-6. **Flake filter** — every probe runs twice per side. If a side disagrees with
+7. **Flake filter** — every probe runs twice per side. If a side disagrees with
    itself the probe is non-deterministic, and it is dropped rather than reported.
    Clocks, RNG, hash ordering and network calls come out here.
 
@@ -73,7 +79,7 @@ Exits 1 when there is a finding, 2 on a usage error, so it drops into CI as-is.
    of only a handful of values can still agree with itself by chance — roughly a
    one-in-six coin flip stays quiet about 17% of the time — so raise `--repeats`
    when you are verifying something like that.
-5. **Cluster** — one root cause is one finding. Thirty calls that all differ
+8. **Cluster** — one root cause is one finding. Thirty calls that all differ
    `int → float` are reported once, with a count.
 
 ## Install
@@ -123,8 +129,10 @@ Probes run your code for real. There is no sandbox yet, so a function that write
 files or hits the network will do that, twice per side. Point it at a repo whose
 test suite you would already run.
 
-The probe corpus is fixed. It finds changes that a boring edge value reaches, and
-misses changes that need a specific structured input. Constructor synthesis stops
+The probe corpus is fixed, beyond what the module's own producers add. It finds
+changes that a boring edge value or a freshly produced one reaches, and misses
+changes that need a specific *state* -- a token that is signed and also expired,
+a connection that is open and also stale. Constructor synthesis stops
 at one level: a class whose `__init__` wants another project type falls back to a
 no-argument call. Caller propagation stops at one level too, and matches by name
 within a file rather than resolving the call graph.

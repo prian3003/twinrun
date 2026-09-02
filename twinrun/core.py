@@ -61,6 +61,7 @@ class Change:
     params: list[tuple[str, str]] = field(default_factory=list)
     ctor_params: list[tuple[str, str]] = field(default_factory=list)
     ctors: dict = field(default_factory=dict)   # local class -> __init__ params
+    producers: dict = field(default_factory=dict)   # annotation -> call expressions
     skip: str | None = None
 
 
@@ -306,9 +307,11 @@ def changed_functions(repo, base, head, include_tests: bool = False) -> list[Cha
         callers = [q for q in pairs
                    if q not in hit and _refs(ht[q][0]) & tails][:CALLER_LIMIT]
 
+        moved = set(hit) | {q.rsplit(".", 1)[-1] for q in hit}
+        made = _producers(h, moved)
         for qual in hit + callers:
             ch = _describe(f, qual, *ht[qual], *bt[qual])
-            ch.ctors = ctors
+            ch.ctors, ch.producers = ctors, made
             out.append(ch)
     return out
 
@@ -339,19 +342,67 @@ def _ctor_exprs(name: str, ctors: dict, limit: int = 3) -> list[str]:
     return out
 
 
-def _values(ann: str, ctors: dict | None = None) -> list[str] | None:
+def _corpus_typed(ann: str) -> bool:
+    """True when the corpus can fill this parameter without inventing a type."""
+    if not ann:
+        return True
+    return any(n.lower() in CORPUS for n in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", ann))
+
+
+def _producers(src: str, exclude: set[str], per_type: int = 2) -> dict[str, list[str]]:
+    """Module functions that make a value of some type, as call expressions.
+
+    A corpus of edge values cannot build a signed token, a parsed config or an
+    open connection. The module that consumes one almost always contains the
+    function that makes one, and calling it is how a person writes the test.
+
+    Anything that changed between the revisions is excluded, directly or by
+    reference: a producer whose own behaviour moved would hand the two sides
+    different inputs, and then nothing being compared means anything.
+    """
+    try:
+        tree = ast.parse(src)
+    except SyntaxError:
+        return {}
+    out = {}
+    for n in tree.body:
+        if not isinstance(n, ast.FunctionDef) or n.returns is None:
+            continue
+        if n.name in exclude or _bad_sig(n) or _refs(n) & exclude:
+            continue
+        ann = ast.unparse(n.returns)
+        if ann in CORPUS and len(out.get(ann, [])) >= per_type:
+            continue
+        args = []
+        for pname, pann in _sig_params(n, False):
+            if not _corpus_typed(pann):
+                break
+            vals = _values(pann)
+            if not vals:
+                break
+            args.append(vals[0])
+        else:
+            out.setdefault(ann, []).append("%s(%s)" % (n.name, ", ".join(args)))
+    return {k: v[:per_type] for k, v in out.items()}
+
+
+def _values(ann: str, ctors: dict | None = None,
+            producers: dict | None = None) -> list[str] | None:
     if not ann:
         return UNTYPED
     names = re.findall(r"[A-Za-z_][A-Za-z0-9_]*", ann)
     optional = "None" in names or "Optional" in names
+    made = (producers or {}).get(ann, [])
     for n in names:
         if n.lower() in CORPUS:
-            vals = list(CORPUS[n.lower()])
+            vals = list(CORPUS[n.lower()]) + made
             return vals + ["None"] if optional else vals
     if not names:
         return None
     head = names[0]
-    if ctors is not None and head in ctors:
+    if made:
+        vals = made
+    elif ctors is not None and head in ctors:
         vals = _ctor_exprs(head, ctors)
     else:
         # An imported or unknown type. Try the no-argument constructor: the name
@@ -365,7 +416,7 @@ def make_probes(change: Change, limit: int, seed: int = 0):
     """One probe is the constructor arguments followed by the call arguments."""
     cols = []
     for pname, ann in (*change.ctor_params, *change.params):
-        v = _values(ann, change.ctors)
+        v = _values(ann, change.ctors, change.producers)
         if v is None:
             return None, f"unmodelled type {ann!r} on {pname}"
         cols.append(v)
@@ -376,16 +427,25 @@ def make_probes(change: Change, limit: int, seed: int = 0):
         total *= len(c)
     if total <= limit:
         return [list(p) for p in itertools.product(*cols)], None
-    rng = random.Random(seed)
+    # Cover every value in every column at least once before sampling the rest.
+    # Sampling the product at random can drop an edge value entirely, and the
+    # edge values are the ones that find things.
     seen, out = set(), []
+    for i in range(min(limit, max(len(c) for c in cols))):
+        cand = tuple(c[i % len(c)] for c in cols)
+        if cand not in seen:
+            seen.add(cand)
+            out.append(list(cand))
+
+    rng = random.Random(seed)
     for _ in range(limit * 30):
+        if len(out) >= limit:
+            break
         cand = tuple(rng.choice(c) for c in cols)
         if cand in seen:
             continue
         seen.add(cand)
         out.append(list(cand))
-        if len(out) >= limit:
-            break
     return out, None
 
 
