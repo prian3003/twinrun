@@ -36,14 +36,19 @@ Exits 1 when there is a finding, 2 on a usage error, so it drops into CI as-is.
    whose AST actually changed, plus one level of their callers in the same file.
    Extracting a helper leaves its callers byte-identical while their behaviour
    moves underneath them, and the caller is the name anyone actually calls.
-   Comments, formatting, docstrings and annotations never reach step 2. A
-   docstring and an annotation are both nodes, so editing either makes the AST
-   differ, but neither is something an output comparison can see. Dropping them
-   takes the itsdangerous sweep below from 4262 probes to 2776 and removes five
-   commits from it entirely, one of which was spending 264 probes on a docs
-   split. Annotations are dropped from parameters and return types only: the one
-   on a class-level assignment stays, because a dataclass field annotation is not
-   a comment on the behaviour, it is the behaviour.
+   Comments, formatting, docstrings, annotations and parameter names never reach
+   step 2. Each of them is a node, so editing one makes the AST differ, and none
+   of them is something an output comparison can see. Dropping them takes the
+   itsdangerous sweep below from 4262 probes to 2807 and removes five commits
+   from it entirely, one of which was spending 264 probes on a docs split.
+   Annotations are dropped from parameters and return types only: the one on a
+   class-level assignment stays, because a dataclass field annotation is not a
+   comment on the behaviour, it is the behaviour. Parameter names go into
+   positional slots, signature and body together, because a twin run only ever
+   calls positionally — renaming by position rather than by identity is what
+   makes that safe, since `f(a, b) -> a` and `f(b, a) -> b` really do return the
+   same thing for `f(1, 2)`. Half the sweep's "signature changed" skips turned
+   out to be renames.
 2. **Signatures** — ask the interpreter, in each worktree, what the target and its
    constructor actually take. The parse tree cannot see a constructor inherited
    from a base class in another module, cannot expand a type alias, and cannot
@@ -78,6 +83,20 @@ Exits 1 when there is a finding, 2 on a usage error, so it drops into CI as-is.
    Any commit that touches an `__init__` gives them up, since `__init__` resolves
    through inheritance and the one that moved is not always the one named.
 
+   A change behind `if version == 0x8f` is not something an edge-value corpus
+   guesses, so the constant is read off the branch that encloses the moved lines
+   and put at the front of that parameter's column, where the first probe picks
+   up every column's front at once — which is what a guard reading `a == 1 and
+   b == 2` needs. Only `==` and `in` are mined, against a parameter or a `self`
+   attribute; a `<` names a direction rather than a value, and the corpus
+   already carries both ends of the range.
+
+   `Any` says nothing on its own, but `dict[str, Any]` and `IO[Any]` say plenty:
+   the type argument is not the type. Reading the whole annotation as untyped is
+   how a file parameter ends up probed with `0`, raising `'int' object has no
+   attribute 'read'` on the first line of every probe, so `Any` only decides the
+   answer when nothing modelled is left underneath it.
+
    A parameter annotated with one of your own classes gets a real instance built
    for it, by probing that class's `__init__` one level deep. A constructor's
    optional parameters are left at their defaults, since inventing values for them
@@ -94,10 +113,10 @@ Exits 1 when there is a finding, 2 on a usage error, so it drops into CI as-is.
 
    A line trace scoped to the target file records which probes executed a line
    the commit actually moved, because calling a changed callable is not the same
-   as reaching the change inside it. Across 41 real itsdangerous commits, 1159 of
-   2776 probes reach it; the rest run the function around the edit. A
+   as reaching the change inside it. Across 41 real itsdangerous commits, 1284 of
+   2807 probes reach it; the rest run the function around the edit. A
    callable that nothing reached and that produced no delta is reported as
-   skipped rather than counted as checked — on that sweep, 44 of 124 callables
+   skipped rather than counted as checked — on that sweep, 41 of 126 callables
    were being called verified without a probe ever touching the diff. A delta
    overrides the reach test: a moved default argument or class attribute is
    evaluated at import, before the trace starts, and differs anyway.
