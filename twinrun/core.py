@@ -993,6 +993,25 @@ def make_probes(change: Change, limit: int, seed: int = 0):
             seen.add(cand)
             out.append(list(cand))
 
+    # Then spend what is left one factor at a time: vary one column and hold the
+    # others at their first value, which is the one most likely to work -- a
+    # producer's, where there is one. The diagonal above advances every column
+    # together, so a signed token is paired with a garbage max_age and the call
+    # dies before the signature is even checked. It has to stay first: a change
+    # that only shows up when two parameters are both interesting is invisible
+    # to a sweep that holds one of them at zero.
+    base = [c[0] for c in cols]
+    for i in range(max(len(c) for c in cols)):
+        if len(out) >= limit:
+            break
+        for j, col in enumerate(cols):
+            if i >= len(col) or len(out) >= limit:
+                continue
+            cand = tuple(col[i] if k == j else base[k] for k in range(len(cols)))
+            if cand not in seen:
+                seen.add(cand)
+                out.append(list(cand))
+
     rng = random.Random(seed)
     for _ in range(limit * 30):
         if len(out) >= limit:
