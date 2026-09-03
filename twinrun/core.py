@@ -367,6 +367,22 @@ def _literal_args(node) -> str | None:
     return ", ".join(parts)
 
 
+def _fixture_rank(v):
+    """A signed token first, an assertion about an error message last.
+
+    The suite's long literals are a mix of the two and only one of them gets
+    past a signature check: `'[42].-9cNi0CxsSB3hZPNCe9a2eEs1ZM'` is a payload,
+    a separator and a digest, while `'not supported'` is prose quoted from an
+    exception. Whitespace is what tells them apart, and a separator is what
+    says the rest of it has structure. Longer breaks the tie, because a token
+    carries a digest and a message does not.
+    """
+    text = v.decode("latin-1") if isinstance(v, bytes) else v
+    return (any(c.isspace() for c in text),
+            not any(c in text for c in "._-:$"),
+            -len(text))
+
+
 def _fixtures(repo, rev, wanted: set[str], per_type: int = 6,
               min_len: int = 12, max_len: int = 400):
     """Literals and literal constructions from the repository's own tests.
@@ -416,10 +432,13 @@ def _fixtures(repo, rev, wanted: set[str], per_type: int = 6,
                 continue
             key = "str" if isinstance(n.value, str) else "bytes"
             got = lits.setdefault(key, [])
-            src_text = repr(n.value)
-            if src_text not in got and len(got) < per_type:
-                got.append(src_text)
-    return lits, calls
+            # Collected past the cap and ranked below: taking the first six the
+            # walk happens to reach is how three error messages beat the one
+            # signed token in the file.
+            if n.value not in got and len(got) < per_type * 8:
+                got.append(n.value)
+    return ({k: [repr(x) for x in sorted(v, key=_fixture_rank)[:per_type]]
+             for k, v in lits.items()}, calls)
 
 
 SIBLING_LIMIT = 12          # modules read from a package to look for producers
