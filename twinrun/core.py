@@ -883,7 +883,16 @@ def _ctor_exprs(name: str, ctors: dict, limit: int = 3, aliases: dict | None = N
     # product only ever varies the last parameter.
     for i in range(limit):
         out.append("%s(%s)" % (name, ", ".join(c[i % len(c)] for c in cols)))
-    return list(dict.fromkeys(real + out))[:max(limit, len(real))]
+    # Those advance in lockstep, and the columns are different lengths, so a
+    # literal that has to appear in two parameters at once is paired with itself
+    # only by luck of index. A hint is the constant the changed line operates
+    # on, so spend one variant putting it in every column that will take it:
+    # click's zsh formatter escapes a colon in the value if and only if the help
+    # is not the sentinel, and `CompletionItem(':', ':', ':')` is the call that
+    # separates the two revisions.
+    hv = ["%s(%s)" % (name, ", ".join(h if h in c else c[0] for c in cols))
+          for h in hints or [] if any(h in c for c in cols)]
+    return list(dict.fromkeys(real + hv + out))[:max(limit, len(real)) + len(hv)]
 
 
 def _is_type_expr(n) -> bool:

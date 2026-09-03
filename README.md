@@ -132,6 +132,10 @@ Exits 1 when there is a finding, 2 on a usage error, so it drops into CI as-is.
    from an error message is not. They reach a nested constructor's parameters
    too, which is where a project type keeps its strings, and an `Any` gets them
    as well — it says nothing about the type, so it has no claim to refuse them.
+   One synthesised construction per hint puts that literal in every parameter
+   that takes it, because the columns are different lengths and the diagonal
+   otherwise pairs a colon in the value with an empty help, which is the one
+   combination the zsh formatter treats the same way in both revisions.
 
    `Any` says nothing on its own, but `dict[str, Any]` and `IO[Any]` say plenty:
    the type argument is not the type. Reading the whole annotation as untyped is
@@ -312,7 +316,7 @@ Fifteen reverted commits across itsdangerous, click, jinja and werkzeug. Six
 never ran — Python 2 sources, and revisions wanting a `markupsafe` old enough
 to still export `soft_unicode`, which no longer builds. Two changed nothing
 executable (a directory rename, a test-config edit) and correctly produced
-nothing. Of the seven that ran, four are reported:
+nothing. Of the seven that ran, five are reported:
 
 | | commit | what twinrun says |
 |---|---|---|
@@ -320,8 +324,8 @@ nothing. Of the seven that ran, four are reported:
 | ✓ | click `e798f64f` | `sensible-editor "0"` became `sensible-editor ''` |
 | ✓ | werkzeug `2c2cc69b` | `is_known_charset` answers differently |
 | ✓ | jinja `1167525b` | a delta in `main` (a rename; a weak pair) |
+| ✓ | click `8bc91271` | `format_completion` stops escaping a colon |
 | ✗ | click `6c4a77ba` | runs, reaches nothing that separates the two |
-| ✗ | click `8bc91271` | needs a colon and a non-sentinel help in one probe |
 | ✗ | werkzeug `0cd2da5d` | thread start ordering, which no probe observes |
 
 `python3 regressions.py <repo>` reproduces the table on any repository, and CI
@@ -385,12 +389,14 @@ The probe corpus is fixed, beyond what the module's own producers add, what the
 test suite wrote down, and the literals on the changed line itself. It misses
 changes that need a state none of those holds.
 
-The columns of a probe advance together, so a change that needs two parameters
-to hold particular values at the same time is only found when those values
-line up at the same index. click's `ZshComplete.format_completion` escapes a
-colon in the item's value if and only if its help is not the sentinel `"_"`;
-the colon and a non-sentinel help never land in the same probe, and the commit
-that removed the escaping — reverted upstream — goes unreported.
+The columns of a probe advance together, and the passes that break the lockstep
+are narrow ones. Every mined guard constant sits at the front of its column, so
+the first probe carries all of them at once; a synthesised constructor spends
+one variant per mined literal putting that literal in every column that takes
+it, which is what finds `CompletionItem(':', ':', ':')`. Neither covers two
+ordinary corpus values needed at the same time — the one-factor sweep varies a
+single column and holds the rest at their first value, so a change that only
+shows up when two unremarkable parameters are both unusual stays invisible.
 
 Constructor synthesis stops at two levels: a class whose `__init__` wants a
 project type gets one built, and that one's own project-typed parameters fall

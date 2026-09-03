@@ -10,7 +10,7 @@ import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from twinrun.core import _typekey, _values, cluster, verify, write_verdicts
+from twinrun.core import _ctor_exprs, _typekey, _values, cluster, verify, write_verdicts
 
 BASE = '''
 def discount(price: int, pct: int) -> int:
@@ -482,6 +482,18 @@ def main():
     assert _values("dict[str, t.Any]")[0] == "{}", "a type argument discarded the container"
     assert "BytesIO" in _values("t.IO[t.Any]")[0], "a file parameter is not modelled"
     assert _values("t.Any") == _values(""), "a bare Any should still get the spread"
+
+    # A str column drops a hint the corpus already holds; an Any column keeps
+    # every one. So the two fall out of step, and click's zsh formatter -- which
+    # escapes a colon in the value if and only if the help is not the sentinel
+    # -- is separated by no probe the diagonal builds: index 2 puts the colon in
+    # the value and the empty string in the help, and an empty help *is* the
+    # sentinel. The one construction that answers the question has to be built
+    # on purpose.
+    item = {"CompletionItem": [("value", "t.Any"), ("type", "str"), ("help", "str")]}
+    built = _ctor_exprs("CompletionItem", item, hints=["'_'", "'\\n'", "':'"])
+    assert "CompletionItem(':', ':', ':')" in built, \
+        f"no construction holds the changed line's literal in every column: {built}"
 
     # A producer is keyed by what the parse tree said; a parameter asks by what
     # the interpreter resolved. Two spellings of one type have to meet, or a
