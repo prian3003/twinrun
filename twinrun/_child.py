@@ -141,11 +141,15 @@ def call(mod, env, payload, argsrc):
                 traced(seen):
             if kind == "ctor":
                 fn = owner                    # the class, called to build one
-            elif kind == "instance":
+            elif kind in ("instance", "property"):
                 # A construction harvested from the tests arrives already built;
                 # anything else is assembled from its constructor's arguments.
                 inst = ctor_args[0] if payload.get("built") else owner(*ctor_args)
-                fn = getattr(inst, name)
+                # Reading a property runs its getter, so the read belongs with
+                # the call and not with the setup: an exception it raises is the
+                # answer, not a failure to build the probe.
+                fn = (lambda i=inst: getattr(i, name)) if kind == "property" \
+                    else getattr(inst, name)
             else:
                 fn = getattr(owner, name)
     except BaseException as e:
@@ -158,6 +162,9 @@ def call(mod, env, payload, argsrc):
         with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf), \
                 traced(seen):
             r = fn(*args)
+            if payload.get("is_async"):
+                import asyncio
+                r = asyncio.run(r)
         val = state_of(r) if kind == "ctor" else safe_repr(r)
         out = result("return", val, type(r).__name__, buf.getvalue())
     except BaseException as e:
@@ -264,16 +271,99 @@ def introspect(mod, payload):
         target = getattr(cls, name)
         ctor_src = cls
 
-    params, why = _params_of(target, drop_first=kind in ("instance", "ctor"))
+    if kind == "property":
+        params, why = [], None       # an attribute read takes no arguments
+    else:
+        params, why = _params_of(target, drop_first=kind in ("instance", "ctor"))
     if params is None:
         return {"params": None, "reason": why}
 
     ctor = []
-    if kind == "instance" and ctor_src.__init__ is not object.__init__:
+    if kind in ("instance", "property") and ctor_src.__init__ is not object.__init__:
         ctor, why = _params_of(ctor_src.__init__, drop_first=True)
         if ctor is None:
             return {"params": None, "reason": f"__init__: {why}"}
     return {"params": params, "ctor": ctor}
+
+
+def neutralise():
+    """Record what a probe tries to run instead of running it.
+
+    Probing click meant probing `Editor.edit_files` and `open_url`, which launch
+    a real editor and a real browser: two per side, per repeat, each ending in a
+    20-second timeout with nothing to show for it. Executing them is not the
+    only loss -- a command that goes out to the shell is invisible to an output
+    comparison, so the commit that started quoting its arguments with
+    `shlex.quote` changed something no probe could see.
+
+    Printing the call instead puts it in captured stdout, which is already part
+    of what the two sides are compared on. The argument list becomes the
+    observable, so a change in how a command is assembled reads as a delta and
+    nothing runs. A raised connection is the same bargain for the network,
+    minus the interest in what was sent.
+
+    ponytail: an in-process shim, not a sandbox. It stops the paths a probe
+    stumbles into, not code that means to escape; os.fork, ctypes and a C
+    extension all go around it. Real isolation is a container or seccomp.
+    """
+    import os
+    import socket
+    import subprocess
+
+    def show(what, args):
+        print(f"[twinrun] {what} {args!r}")
+
+    class Stub:
+        """Enough of a finished process for a caller to inspect and move on."""
+        returncode, stdout, stderr, pid = 0, "", "", 0
+
+        def __init__(self, *a, **k):
+            self.args = a[0] if a else None
+
+        def communicate(self, *a, **k):
+            return "", ""
+
+        def wait(self, *a, **k):
+            return 0
+
+        def poll(self):
+            return 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def popen(*a, **k):
+        show("subprocess", a[0] if a else k.get("args"))
+        return Stub(*a)
+
+    subprocess.Popen = popen
+    subprocess.run = lambda *a, **k: (show("subprocess", a[0] if a else k.get("args"))
+                                      or Stub(*a))
+    subprocess.call = subprocess.check_call = lambda *a, **k: (
+        show("subprocess", a[0] if a else k.get("args")) or 0)
+    subprocess.check_output = lambda *a, **k: (
+        show("subprocess", a[0] if a else k.get("args")) or "")
+    os.system = lambda cmd: show("shell", cmd) or 0
+    os.popen = lambda cmd, *a, **k: show("shell", cmd) or io.StringIO("")
+    for name in ("execv", "execvp", "execve", "execl", "execlp", "spawnv", "spawnl"):
+        if hasattr(os, name):
+            setattr(os, name, lambda *a, _n=name, **k: show(_n, a))
+    try:
+        import webbrowser
+        webbrowser.open = lambda url, *a, **k: show("browser", url) or True
+        webbrowser.open_new = webbrowser.open_new_tab = webbrowser.open
+    except ImportError:
+        pass
+
+    def refuse(*a, **k):
+        raise OSError("twinrun: the network is not available to a probe")
+
+    socket.socket.connect = refuse
+    socket.socket.connect_ex = refuse
+    socket.create_connection = refuse
 
 
 def main():
@@ -282,6 +372,7 @@ def main():
     try:
         root = Path(payload["root"])
         ROOTS.extend(sorted({str(root), str(root.resolve())}, key=len, reverse=True))
+        neutralise()
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
             mod = load(root, payload["file"])

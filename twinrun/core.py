@@ -50,6 +50,24 @@ UNTYPED = ["0", "1", "-1", "''", "'a'", "[]", "{}", "None", "True", "-0.5"]
 
 DECOR_OK = {"staticmethod", "classmethod"}
 
+# Exceptions the interpreter raises when a value is the wrong kind of thing.
+# If the old code refused a probe with one of these, the probe was never a
+# valid call, and what the new code does with it is not a behaviour anyone was
+# relying on. jinja's pyupgrade commit reported 19 findings on the strength of
+# TemplateSyntaxError(msg, lineno='a'): the base raised "%d format: a real
+# number is required" and the f-string that replaced it formatted the string
+# happily. True, and not a regression.
+# ponytail: exception type is the whole test; a function whose contract is to
+# raise TypeError has its message changes dropped with the noise. Narrow it by
+# checking that the raise came from below the target's own frame if that bites.
+REFUSED = {"TypeError", "AttributeError"}
+
+# How many levels of project type a constructor may want before the synthesis
+# gives up. One level is enough for a library of leaf types and not enough for a
+# framework: click's Context takes a Command, and at one level every probe that
+# needed a Context died in setup.
+CTOR_DEPTH = 2
+
 # Probing a test file means calling its entry points, which runs the suite and
 # then reports that its own output changed. True, and useless.
 TEST_PATH = re.compile(r"(^|/)(tests?/|test_[^/]*\.py$|[^/]*_test\.py$|conftest\.py$)")
@@ -74,6 +92,7 @@ class Change:
     risky: set = field(default_factory=set)  # producer calls the commit changed
     unknown: list = field(default_factory=list)  # producer calls with no declared type
     skip: str | None = None
+    is_async: bool = False          # awaited in the child rather than called
 
     @property
     def instances(self) -> list[str]:
@@ -81,7 +100,7 @@ class Change:
         constructor's arguments from the corpus. A constructor with six
         parameters spends six probe columns on getting itself built; one the
         test suite already wrote spends one, and is known to work."""
-        return self.built if self.kind == "instance" and self.built else []
+        return self.built if self.kind in ("instance", "property") and self.built else []
 
 
 @dataclass
@@ -103,6 +122,7 @@ class Report:
     checked: int = 0        # callables actually twin-run
     probes: int = 0         # probes compared after the flake filter
     flaky: int = 0          # probes dropped as non-deterministic
+    refused: int = 0        # probes the oracle rejected as the wrong type
     reached: int = 0        # of those, probes that executed a line the commit touched
 
 
@@ -255,11 +275,46 @@ def _reconcile(base_params, head_params, head_defaults):
     return None
 
 
-def _describe(file: str, qualname: str, node, cls_node, base_node, base_cls) -> Change:
+def _transparent(src: str) -> set[str]:
+    """Decorators in this module that hand the function back unchanged.
+
+    A marker decorator records something about a function and returns it:
+    jinja's @internalcode registers a code object, @pass_context sets an
+    attribute the renderer reads later. The decorated name is still the plain
+    function, so skipping it costs a callable and buys nothing -- 51 of them in
+    one click and jinja sweep. A wrapper is not transparent and is not matched:
+    its return is a call or a closure, never its own parameter.
+    """
+    try:
+        tree = ast.parse(src)
+    except SyntaxError:
+        return set()
+    out = set()
+    for n in tree.body:
+        if not isinstance(n, ast.FunctionDef) or not n.args.args:
+            continue
+        first = n.args.args[0].arg
+        rets = [r for r in ast.walk(n) if isinstance(r, ast.Return)]
+        if rets and all(isinstance(r.value, ast.Name) and r.value.id == first
+                        for r in rets):
+            out.add(n.name)
+    return out
+
+
+def _describe(file: str, qualname: str, node, cls_node, base_node, base_cls,
+              transparent: frozenset = frozenset()) -> Change:
     name = qualname.rsplit(".", 1)[-1]
-    if isinstance(node, ast.AsyncFunctionDef):
-        return Change(file, qualname, skip="async")
-    decs = _decorators(node)
+    # An `async def` is an ordinary callable whose answer arrives through an
+    # event loop, and the child runs one. What stays skipped is a shape the
+    # comparison cannot make sense of: a coroutine on one side and a plain
+    # function on the other is a different way of being called, and an async
+    # generator has no single result to compare.
+    if isinstance(node, ast.AsyncFunctionDef) != isinstance(base_node, ast.AsyncFunctionDef):
+        return Change(file, qualname, skip="changed between sync and async")
+    if isinstance(node, ast.AsyncFunctionDef) and \
+            any(isinstance(x, (ast.Yield, ast.YieldFrom)) for x in ast.walk(node)):
+        return Change(file, qualname, skip="async generator")
+    decs = _decorators(node) - transparent
 
     if cls_node is None:
         if decs:
@@ -286,7 +341,11 @@ def _describe(file: str, qualname: str, node, cls_node, base_node, base_cls) -> 
         if params is None:
             return Change(file, qualname, skip=_sig_msg(base_node, node, True))
         return Change(file, qualname, kind="ctor", params=params)
-    unknown = decs - DECOR_OK
+    # A property is a method whose call is an attribute read. The value it
+    # computes is behaviour like any other -- a commit that changes what
+    # `cart.total` comes back with is exactly what this tool is for -- and it
+    # was the largest single class of skip in the click and jinja sweeps.
+    unknown = decs - DECOR_OK - {"property"}
     if unknown:
         return Change(file, qualname, skip=f"decorated ({', '.join(sorted(unknown))})")
     if _bad_sig(node) or _bad_sig(base_node):
@@ -317,7 +376,8 @@ def _describe(file: str, qualname: str, node, cls_node, base_node, base_cls) -> 
                         len(node.args.defaults))
     if params is None:
         return Change(file, qualname, skip=_sig_msg(base_node, node, True))
-    return Change(file, qualname, kind="instance", params=params, ctor_params=ctor)
+    kind = "property" if "property" in decs else "instance"
+    return Change(file, qualname, kind=kind, params=params, ctor_params=ctor)
 
 
 def is_test_path(path: str) -> bool:
@@ -423,10 +483,17 @@ def _fixtures(repo, rev, wanted: set[str], per_type: int = 6,
         except SyntaxError:
             continue
         for n in ast.walk(tree):
-            if isinstance(n, ast.Call) and isinstance(n.func, ast.Name):
+            if isinstance(n, ast.Call) and isinstance(n.func, (ast.Name, ast.Attribute)):
                 # partial(TimestampSigner, secret_key="secret-key") is a
                 # construction; it is how a pytest fixture writes one.
-                name, node = n.func.id, n
+                # A suite that imports the package rather than the names in it
+                # writes click.Option(["--x"]), and taking only the bare form
+                # threw away every construction click's own tests perform. The
+                # name is kept and the qualifier dropped, because the caller
+                # only keeps names that are classes of the module being probed,
+                # where the bare name is what resolves.
+                name = n.func.id if isinstance(n.func, ast.Name) else n.func.attr
+                node = n
                 if name == "partial" and n.args and isinstance(n.args[0], ast.Name):
                     name = n.args[0].id
                     node = ast.Call(func=n.func, args=n.args[1:], keywords=n.keywords)
@@ -644,6 +711,10 @@ def changed_functions(repo, base, head, include_tests: bool = False) -> list[Cha
     for f, (b, h, bt, ht, pairs, hit) in seen.items():
         if not hit:
             continue
+        # Both sides have to agree that a decorator is transparent. One that
+        # started wrapping in head changes how the name is called, which is a
+        # difference the probe cannot attribute to the body.
+        clear = frozenset(_transparent(b) & _transparent(h))
         # Producers are read from the base revision, never the head one. A
         # function that only exists in head raises NameError on one side and
         # returns a value on the other, which is a delta on every callable that
@@ -722,7 +793,8 @@ def changed_functions(repo, base, head, include_tests: bool = False) -> list[Cha
         made = {k: [e for _, e in v] for k, v in made.items()}
         touched = _hunks(repo, base, head, f)
         for qual in hit + callers:
-            ch = _describe(f, qual, *ht[qual], *bt[qual])
+            ch = _describe(f, qual, *ht[qual], *bt[qual], transparent=clear)
+            ch.is_async = isinstance(ht[qual][0], ast.AsyncFunctionDef)
             ch.ctors, ch.producers, ch.lines = ctors, made, touched
             ch.guards = _guards(ht[qual][0], touched["head"])
             ch.risky = risky
@@ -761,11 +833,14 @@ def _siblings(repo, head, f: str, cache: dict) -> list[str]:
 # --------------------------------------------------------------------------
 
 def _ctor_exprs(name: str, ctors: dict, limit: int = 3, aliases: dict | None = None,
-                calls: dict | None = None) -> list[str]:
-    """Source expressions that build an instance of a local class. One level
-    deep: a constructor that itself wants a project type falls back to a
-    no-argument call, which fails identically on both sides and so reports
-    nothing.
+                calls: dict | None = None, depth: int = CTOR_DEPTH,
+                producers: dict | None = None) -> list[str]:
+    """Source expressions that build an instance of a local class, recursively:
+    a constructor that itself wants a project type gets one built, down to
+    CTOR_DEPTH. Stopping at the first level is what a framework's own types
+    defeat -- click's Context takes a Command, Option lives on a Parameter --
+    and the fallback for an unbuildable parameter is a no-argument call, which
+    raises in setup and takes every probe for that callable with it.
 
     A construction the test suite already performs comes first. Signer rejects
     every separator the corpus contains -- ASCII letters, digits and -_= are
@@ -777,7 +852,9 @@ def _ctor_exprs(name: str, ctors: dict, limit: int = 3, aliases: dict | None = N
         return real[:limit] or [f"{name}()"]
     cols = []
     for pname, pann in params:
-        v = _values(_expand(pann, aliases or {}))    # no ctors: depth stops here
+        v = _values(_expand(pann, aliases or {}),
+                    ctors if depth > 0 else None, producers,
+                    depth=depth - 1, aliases=aliases, calls=calls)
         if v is None:
             return [f"{name}()"]
         cols.append(v)
@@ -1015,7 +1092,8 @@ GUESSED = 3         # producer values offered per type to an unannotated paramet
 
 
 def _values(ann: str, ctors: dict | None = None,
-            producers: dict | None = None) -> list[str] | None:
+            producers: dict | None = None, depth: int = CTOR_DEPTH,
+            aliases: dict | None = None, calls: dict | None = None) -> list[str] | None:
     if not ann:
         # An unannotated parameter used to see nothing but the spread, which
         # threw away every producer and fixture the module had. A codebase with
@@ -1053,7 +1131,8 @@ def _values(ann: str, ctors: dict | None = None,
     if made:
         vals = made
     elif ctors is not None and head in ctors:
-        vals = _ctor_exprs(head, ctors)
+        vals = _ctor_exprs(head, ctors, aliases=aliases, calls=calls,
+                           depth=depth, producers=producers)
     else:
         # An imported or unknown type. Try the no-argument constructor: the name
         # is resolved in the target module's own namespace, and if it cannot be
@@ -1161,6 +1240,7 @@ def run_side(side: str, worktree: Path, change: Change, probes, timeout: float,
         "file": change.file,
         "qualname": change.qualname,
         "kind": change.kind,
+        "is_async": change.is_async,
         "n_ctor": 1 if change.instances else len(change.ctor_params),
         "built": bool(change.instances),
         "lines": change.lines.get(side, []),
@@ -1286,7 +1366,7 @@ def _sweep(ch: Change, probes, bw: Path, hw: Path, repeats: int, timeout: float,
     if all(r["kind"] in dead for r in runs["base", 0]):
         return None, "no usable inputs could be built"
 
-    kept = hits = flaky = 0
+    kept = hits = flaky = refused = 0
     found = []
     for i, args in enumerate(probes):
         bs = [runs["base", k][i] for k in range(repeats)]
@@ -1299,10 +1379,13 @@ def _sweep(ch: Change, probes, bw: Path, hw: Path, repeats: int, timeout: float,
         if i < len(reached) and reached[i]:
             hits += 1
         if bs[0] != hs[0]:
+            if bs[0]["kind"] == "raise" and bs[0]["type"] in REFUSED:
+                refused += 1
+                continue
             found.append(Delta(ch.file, ch.qualname, args, bs[0], hs[0], ch.kind,
                                1 if ch.instances else len(ch.ctor_params),
                                bool(ch.instances)))
-    return (kept, hits, flaky, found), None
+    return (kept, hits, flaky, refused, found), None
 
 
 def verify(repo, base, head, limit=24, timeout=20.0, seed=0, repeats=2,
@@ -1349,12 +1432,13 @@ def verify(repo, base, head, limit=24, timeout=20.0, seed=0, repeats=2,
                     rep.skipped.append((ch.qualname, err))
                     continue
 
-                kept, hits, flaky, found = res
+                kept, hits, flaky, refused, found = res
                 # Cost is counted whatever the verdict: these probes ran, and the
                 # flake filter really did fire. Only checked, reached and the
                 # deltas are a claim about what the sweep established.
                 rep.probes += kept
                 rep.flaky += flaky
+                rep.refused += refused
 
                 # A probe that never executed a moved line could not have been
                 # affected by the edit, so a callable no probe reached was run,

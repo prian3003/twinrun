@@ -16,6 +16,10 @@ def render_call(d):
     args = ", ".join(d.args[d.n_ctor:])
     if d.kind == "ctor":
         return f"{d.qualname.rsplit('.', 1)[0]}({args})"   # nobody calls __init__
+    if d.kind == "property":
+        cls, attr = d.qualname.split(".", 1)
+        recv = d.args[0] if d.built else f"{cls}({', '.join(d.args[:d.n_ctor])})"
+        return f"{recv}.{attr}"
     if d.kind == "instance":
         cls, meth = d.qualname.split(".", 1)
         recv = d.args[0] if d.built else f"{cls}({', '.join(d.args[:d.n_ctor])})"
@@ -53,6 +57,7 @@ def show(rep, base, head):
         f"{paint(findings, RED if n else GREEN)} · {checked}"
         f" · {rep.probes} probes ({rep.reached} reached the change)"
         f" · {rep.flaky} flaky dropped"
+        + (f" · {rep.refused} the old code refused" if rep.refused else "")
     )
     for name, why in rep.skipped:
         print(paint(f"  skipped {name}: {why}", YELLOW))

@@ -129,6 +129,33 @@ class Cart:
     @staticmethod
     def parse(raw: str) -> int:
         return int(raw or 0)
+
+
+def tag(f):                                       # a marker decorator: records
+    f.tagged = True                               # something and hands the
+    return f                                      # function straight back
+
+
+@tag
+def weight(n: int) -> int:
+    return n * 2
+
+
+class Shelf:
+    def __init__(self, n: int):
+        self.n = n
+
+    @property
+    def load(self) -> int:
+        return self.n * 3
+
+
+def strict(v):
+    return v + 1                                  # TypeError on a string
+
+
+async def fetch(n: int) -> int:
+    return n * 2
 '''
 
 HEAD = '''
@@ -250,6 +277,35 @@ class Cart:
     @staticmethod
     def parse(raw: str) -> int:
         return int(raw.strip() or 0)              # ValueError -> 0 on blank
+
+
+def tag(f):
+    f.tagged = True
+    return f
+
+
+@tag
+def weight(n: int) -> int:
+    return n * 3                                  # changed behind a marker
+
+
+class Shelf:
+    def __init__(self, n: int):
+        self.n = n
+
+    @property
+    def load(self) -> float:
+        return self.n * 3.0                       # a property's value changed
+
+
+def strict(v):
+    if isinstance(v, str):                        # the old code refused a
+        return v + "1"                            # string; only the inputs it
+    return v + 1                                  # never accepted differ
+
+
+async def fetch(n: int) -> int:
+    return n * 3                                  # awaited, and it changed
 '''
 
 
@@ -317,6 +373,23 @@ def main():
 
     # a parameter annotated with a project type gets a real instance built for it
     assert "fmt" in hit, f"missed a change behind a project-typed parameter; found {hit}"
+
+    # a marker decorator hands the function back unchanged, so the name is still
+    # the plain function and there is nothing about it a probe cannot call
+    assert "weight" in hit, f"missed a change behind a marker decorator; found {hit}"
+    assert "weight" not in skipped, f"got {skipped.get('weight')!r}"
+
+    # a property is called by reading it, and what it computes is behaviour
+    assert "Shelf.load" in hit, f"missed a property's changed value; found {hit}"
+
+    # the old code raised TypeError on every input the two sides disagree about:
+    # it never accepted them, so there is no behaviour there to have changed
+    assert "strict" not in hit, "a delta on an input the old code refused"
+    assert rep.refused > 0, "the refused filter never fired"
+
+    # an async def is an ordinary callable whose answer arrives through a loop
+    assert "fetch" in hit, f"missed a change in an async def; found {hit}"
+    assert "fetch" not in skipped, f"got {skipped.get('fetch')!r}"
 
     # things that must stay quiet
     assert "slug" not in hit, "equivalent rewrite reported as a delta"
@@ -392,7 +465,7 @@ def main():
     assert "Crate.empty" not in skipped, \
         f"the constructor ran outside the trace: {skipped.get('Crate.empty')!r}"
 
-    assert rep.checked == 19, f"expected 19 callables twin-run, got {rep.checked}"
+    assert rep.checked == 23, f"expected 23 callables twin-run, got {rep.checked}"
 
     # `Any` inside a subscript is a type argument, not the type: a dict whose
     # values are Any is still a dict, and a file annotated IO[Any] is still a
