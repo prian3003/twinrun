@@ -14,9 +14,7 @@ twinrun main..HEAD
   DELTA  billing/cart.py :: Cart.total   +7 more calls
          Cart(0).total()
          base  return       int        0
-               after  self=[('items', []), ('rate', 0)]
          head  return       float      0.0
-               after  self=[('items', []), ('rate', 0)]
 
   DELTA  billing/cart.py :: Cart.add     +21 more calls
          Cart(0).add(1)
@@ -39,24 +37,26 @@ Exits 1 when there is a finding, 2 on a usage error, so it drops into CI as-is.
    Comments, formatting, docstrings, annotations and parameter names never reach
    step 2. Each of them is a node, so editing one makes the AST differ, and none
    of them is something an output comparison can see. Dropping them takes the
-   itsdangerous sweep below from 4262 probes to 2847 and removes five commits
-   from it entirely, one of which was spending 264 probes on a docs split.
+   itsdangerous sweep below from 7061 probes to 5738 and removes four commits
+   from it entirely, one of which was spending 264 probes on a docs split. It
+   also cuts the "no probe reached" skips from 83 to 32: most of what could not
+   reach the change was a callable with nothing executable changed in it.
    Annotations are dropped from parameters and return types only: the one on a
    class-level assignment stays, because a dataclass field annotation is not a
    comment on the behaviour, it is the behaviour. Parameter names go into
    positional slots, signature and body together, because a twin run only ever
    calls positionally — renaming by position rather than by identity is what
    makes that safe, since `f(a, b) -> a` and `f(b, a) -> b` really do return the
-   same thing for `f(1, 2)`. Half the sweep's "signature changed" skips turned
-   out to be renames.
+   same thing for `f(1, 2)`. Four of the sweep's seven "signature changed"
+   skips turned out to be renames.
 2. **Signatures** — ask the interpreter, in each worktree, what the target and its
    constructor actually take. The parse tree cannot see a constructor inherited
    from a base class in another module, cannot expand a type alias, and cannot
    resolve a string annotation; all three are ordinary in real code.
 3. **Producers** — a corpus of edge values cannot build a signed token or a parsed
    config, but the module that consumes one usually contains the function that
-   makes one. Module functions and instance methods with a return annotation are
-   called to fill parameters of that type, including from the sibling modules
+   makes one. Module functions and instance methods are
+   called to fill parameters of their type, including from the sibling modules
    this file imports from -- `timed.py` takes what `signer.py` signs. Type
    aliases are expanded, an inherited `__init__` is resolved to the base class
    that defines it, and the repository's own tests are read for inputs: nobody's
@@ -71,12 +71,32 @@ Exits 1 when there is a finding, 2 on a usage error, so it drops into CI as-is.
    and only one of them is an input: `'[42].-9cNi0CxsSB3hZPNCe9a2eEs1ZM'` is a
    payload, a separator and a digest, while `'not supported'` is prose quoted
    from an assertion about an error message. Whitespace says prose, a separator
-   says structure. Producers are read from
-   the base revision only. A function that exists solely in head would raise
-   `NameError` on one side and return a value on the other, which is a delta on
-   every callable that consumes its type. Anything that changed is excluded, directly or by
-   reference: a producer whose own behaviour moved would hand the two sides
-   different inputs, and then nothing being compared means anything.
+   says structure.
+
+   Producers are read from the base revision only. A function that exists solely
+   in head would raise `NameError` on one side and return a value on the other,
+   which is a delta on every callable that consumes its type. Then each one is
+   called once, in the base worktree, and what it made is pasted back into the
+   probes as a literal. That is what makes a round trip survive its own commit:
+   a producer is code, and code the commit touched hands the two sides different
+   inputs, so the commit that changes `dumps` used to be exactly the commit that
+   left `loads` with nothing but a corpus string and `No b'.' found in value`.
+   Frozen, it stops being code -- both sides get the same bytes, and the bytes
+   are the ones the old revision issued, which is the contract the whole tool
+   rests on. It settles the clocks on the way past: a producer that stamps a
+   timestamp used to sign a fresh token per side and disagree about nothing.
+   Anything that will not freeze into a literal -- an instance, an open file --
+   keeps its call expression, and that is only allowed for a producer the commit
+   left alone.
+
+   The same call is where an unannotated producer gets its type. Nothing in the
+   source says what `def dumps(self, obj, salt=None)` makes, which is most of a
+   codebase written before anyone typed it, so it files itself under whatever it
+   turned out to return -- behind everything the annotations offered, because a
+   declared type is a claim about every call and this is a fact about one. The
+   two are matched on meaning rather than spelling: `_t.Union[str, bytes]` off
+   the parse tree and `str | bytes` out of the interpreter are one type written
+   twice, and as strings they never met.
 4. **Probes** — build inputs from each parameter's type, using a small
    corpus of edge values (`0`, `-1`, `2**31`, `''`, `float('nan')`, `[]`, …). For a
    method, the constructor's parameters are probed in the same sweep, so the
@@ -128,13 +148,26 @@ Exits 1 when there is a finding, 2 on a usage error, so it drops into CI as-is.
    a subprocess on each side with the same inputs. Return value, type, exception,
    stdout, argument mutation and instance state are all recorded. A method that
    returns `None` and quietly changes `self` is the common case, not an edge case.
+   The instance is compared for what the call changed, not for what it held on
+   arrival, the same way the argument list is: a constructor that renames an
+   attribute otherwise reports itself once per method on the class, on methods
+   that each return exactly what they always did, and never at the line it
+   happened on.
+
+   A constructor gets a probe of its own instead. It returns nothing, so the
+   instance it left behind is the answer, and its class's methods come along as
+   callers -- what the constructor became is one half of the question and what
+   that costs the methods is the other. No method body names `__init__`, so
+   nothing finds them by reference; they have to be taken by class. The trace
+   goes with them: a constructor runs entirely while the probe is being set up,
+   and a trace that starts at the call sees none of it.
 
    A line trace scoped to the target file records which probes executed a line
    the commit actually moved, because calling a changed callable is not the same
-   as reaching the change inside it. Across 41 real itsdangerous commits, 1349 of
-   2847 probes reach it; the rest run the function around the edit. A
+   as reaching the change inside it. Across 41 real itsdangerous commits, 4402 of
+   5738 probes reach it; the rest run the function around the edit. A
    callable that nothing reached and that produced no delta is reported as
-   skipped rather than counted as checked — on that sweep, 39 of 126 callables
+   skipped rather than counted as checked — on that sweep, 32 of 253 callables
    were being called verified without a probe ever touching the diff. A delta
    overrides the reach test: a moved default argument or class attribute is
    evaluated at import, before the trace starts, and differs anyway.
@@ -155,7 +188,7 @@ Exits 1 when there is a finding, 2 on a usage error, so it drops into CI as-is.
    with each other, and the two sides differ for a reason that has nothing to do
    with the commit. Interleaved, both sides straddle the same window and the
    drift surfaces as a side disagreeing with itself. Two runs of the itsdangerous
-   sweep now report the same 55 findings; before, the count moved between runs.
+   sweep now report the same 36 findings; before, the count moved between runs.
 
    Two runs catch noise with a wide range of outcomes. A target that returns one
    of only a handful of values can still agree with itself by chance — roughly a
