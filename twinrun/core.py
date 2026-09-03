@@ -877,7 +877,7 @@ def _args_from(params, drop_first: bool, fixtures: dict | None = None,
         if not vals:
             return []
         plain.append(vals[0])
-        f = _made(pann, re.findall(r"[A-Za-z_][A-Za-z0-9_]*", pann), fixtures, 1)
+        f = _made(pann, fixtures, 1)
         fixed.append(f[0] if f else vals[0])
     return [plain] if plain == fixed else [plain, fixed]
 
@@ -950,15 +950,43 @@ def _producers(src: str, exclude: set[str], ctors: dict | None = None,
     return out
 
 
-def _made(ann: str, names: list[str], producers: dict | None, limit: int = 4) -> list[str]:
+UNION = {"Union", "Optional", "None", "NoneType"}
+
+
+def _typekey(ann: str) -> frozenset[str]:
+    """An annotation in a form two spellings of it can be compared in.
+
+    Producers are keyed by what the parse tree said and parameters ask by what
+    the interpreter resolved, so `_t.Union[str, bytes]` and `str | bytes` were
+    two unrelated strings and the module's own `dumps` was invisible to its own
+    `loads`. A union is its members, because a producer of either one fills it.
+    Anything else is itself: `Iterator[Signer]` is not a Signer.
+    """
+    try:
+        node = ast.parse(QUALIFIER.sub("", ann.strip()), mode="eval").body
+    except (SyntaxError, ValueError):
+        return frozenset()
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+        return _typekey(ast.unparse(node.left)) | _typekey(ast.unparse(node.right))
+    if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name) \
+            and node.value.id in UNION:
+        arg = node.slice
+        parts = arg.elts if isinstance(arg, ast.Tuple) else [arg]
+        return frozenset().union(*(_typekey(ast.unparse(e)) for e in parts))
+    name = ast.unparse(node)
+    return frozenset() if name in UNION else frozenset({name})
+
+
+def _made(ann: str, producers: dict | None, limit: int = 4) -> list[str]:
     """Producer expressions for this annotation. A producer returning `bytes`
     fills a parameter annotated `str | bytes`, which is how half of a typed
     codebase is written."""
     if not producers:
         return []
     out = list(producers.get(ann, []))
+    want = _typekey(ann)
     for k, v in producers.items():
-        if k != ann and k in names:
+        if k != ann and want & _typekey(k):
             out += v
     return out[:limit]
 
@@ -976,8 +1004,8 @@ def _values(ann: str, ctors: dict | None = None,
         # the token the test suite wrote down, never `0`. They go in front,
         # because the spread lands on the same TypeError on both sides and
         # reports nothing whatever order it is tried in.
-        made = (_made("str", ["str"], producers, GUESSED)
-                + _made("bytes", ["bytes"], producers, GUESSED))
+        made = (_made("str", producers, GUESSED)
+                + _made("bytes", producers, GUESSED))
         return made + UNTYPED if made else UNTYPED
     names = re.findall(r"[A-Za-z_][A-Za-z0-9_]*", QUALIFIER.sub("", ann))
     optional = "None" in names or "Optional" in names
@@ -992,7 +1020,7 @@ def _values(ann: str, ctors: dict | None = None,
             names = rest
         else:
             return UNTYPED          # a type that says nothing gets the spread
-    made = _made(ann, names, producers)
+    made = _made(ann, producers)
     for n in names:
         if n.lower() in CORPUS:
             vals = list(CORPUS[n.lower()]) + made

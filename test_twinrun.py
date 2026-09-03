@@ -10,7 +10,7 @@ import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from twinrun.core import _values, cluster, verify
+from twinrun.core import _typekey, _values, cluster, verify
 
 BASE = '''
 def discount(price: int, pct: int) -> int:
@@ -348,6 +348,13 @@ def main():
     assert _values("dict[str, t.Any]")[0] == "{}", "a type argument discarded the container"
     assert "BytesIO" in _values("t.IO[t.Any]")[0], "a file parameter is not modelled"
     assert _values("t.Any") == _values(""), "a bare Any should still get the spread"
+
+    # A producer is keyed by what the parse tree said; a parameter asks by what
+    # the interpreter resolved. Two spellings of one type have to meet, or a
+    # module's own `dumps` stays invisible to its own `loads`.
+    assert _typekey("t.Union[str, bytes]") == _typekey("str | bytes")
+    assert not _typekey("t.Iterator[Signer]") & _typekey("Signer"), \
+        "a producer of an iterator was offered for the thing it iterates"
 
     # Reaching the change is the whole chain -- hunk parse, payload, line trace,
     # tally -- and any broken link in it reports zero.
