@@ -21,6 +21,19 @@ jobs:
       # or a false positive; a "ceiling" case staying silent is expected.
       - run: python sandbox.py
 
+  # The end-to-end claim, gated: itsdangerous f513b48d added a media type header
+  # to every token it issued and was reverted 19 months later. If a change here
+  # stops the tool catching that, the thing it exists to do has broken.
+  regressions:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: git clone --quiet https://github.com/pallets/itsdangerous ../itsdangerous
+      - run: python regressions.py ../itsdangerous
+
   # The tool verifies its own pull requests. If this is too noisy to live with,
   # that is the finding: the whole thesis rests on the output being signal.
   twinrun:
