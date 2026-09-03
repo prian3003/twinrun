@@ -89,6 +89,7 @@ class Change:
     built: list[str] = field(default_factory=list)  # constructions taken from the tests
     lines: dict = field(default_factory=dict)   # side -> line numbers the commit touched
     guards: dict = field(default_factory=dict)  # parameter -> literals a branch demands
+    hints: list = field(default_factory=list)   # literals the moved lines operate on
     risky: set = field(default_factory=set)  # producer calls the commit changed
     unknown: list = field(default_factory=list)  # producer calls with no declared type
     skip: str | None = None
@@ -574,6 +575,31 @@ def _guard_key(n) -> str | None:
     return None
 
 
+def _hints(node, lines, cap: int = 3) -> list[str]:
+    """String and bytes literals written on the lines the commit moved.
+
+    A guard mines the constant a branch demands. This mines the constant the
+    changed code operates on, which is the other half: click's revert dropped
+    the colon escaping from `item.value.replace(":", "\\:")`, and no corpus of
+    edge values contains a string with a colon in it, so both revisions agreed
+    on every probe that ran. The literal is sitting on the moved line.
+
+    Short ones first: a separator or an escape is the sort of thing a value has
+    to contain for the changed line to do anything, and a paragraph of prose in
+    an error message is not.
+    """
+    want = set(lines)
+    seen = []
+    for n in ast.walk(node):
+        if not isinstance(n, ast.Constant) or not isinstance(n.value, (str, bytes)):
+            continue
+        if n.lineno not in want or not 1 <= len(n.value) <= 24:
+            continue
+        if (r := repr(n.value)) not in seen:
+            seen.append(r)
+    return sorted(seen, key=len)[:cap]
+
+
 def _guards(node, lines) -> dict[str, list[str]]:
     """Literals a name has to hold for one of `lines` to execute.
 
@@ -797,6 +823,11 @@ def changed_functions(repo, base, head, include_tests: bool = False) -> list[Cha
             ch.is_async = isinstance(ht[qual][0], ast.AsyncFunctionDef)
             ch.ctors, ch.producers, ch.lines = ctors, made, touched
             ch.guards = _guards(ht[qual][0], touched["head"])
+            # Both sides: a commit that removes a line leaves the literal it
+            # operated on only in base, and a revert is nothing but removals.
+            ch.hints = _hints(ht[qual][0], touched["head"]) + \
+                [x for x in _hints(bt[qual][0], touched["base"])
+                 if x not in _hints(ht[qual][0], touched["head"])]
             ch.risky = risky
             ch.unknown = seek
             # A changed constructor anywhere disqualifies every harvested
@@ -834,7 +865,7 @@ def _siblings(repo, head, f: str, cache: dict) -> list[str]:
 
 def _ctor_exprs(name: str, ctors: dict, limit: int = 3, aliases: dict | None = None,
                 calls: dict | None = None, depth: int = CTOR_DEPTH,
-                producers: dict | None = None) -> list[str]:
+                producers: dict | None = None, hints: list | None = None) -> list[str]:
     """Source expressions that build an instance of a local class, recursively:
     a constructor that itself wants a project type gets one built, down to
     CTOR_DEPTH. Stopping at the first level is what a framework's own types
@@ -854,7 +885,7 @@ def _ctor_exprs(name: str, ctors: dict, limit: int = 3, aliases: dict | None = N
     for pname, pann in params:
         v = _values(_expand(pann, aliases or {}),
                     ctors if depth > 0 else None, producers,
-                    depth=depth - 1, aliases=aliases, calls=calls)
+                    depth=depth - 1, aliases=aliases, calls=calls, hints=hints)
         if v is None:
             return [f"{name}()"]
         cols.append(v)
@@ -1093,7 +1124,8 @@ GUESSED = 3         # producer values offered per type to an unannotated paramet
 
 def _values(ann: str, ctors: dict | None = None,
             producers: dict | None = None, depth: int = CTOR_DEPTH,
-            aliases: dict | None = None, calls: dict | None = None) -> list[str] | None:
+            aliases: dict | None = None, calls: dict | None = None,
+            hints: list | None = None) -> list[str] | None:
     if not ann:
         # An unannotated parameter used to see nothing but the spread, which
         # threw away every producer and fixture the module had. A codebase with
@@ -1104,7 +1136,7 @@ def _values(ann: str, ctors: dict | None = None,
         # reports nothing whatever order it is tried in.
         made = (_made("str", producers, GUESSED)
                 + _made("bytes", producers, GUESSED))
-        return made + UNTYPED if made else UNTYPED
+        return made + list(hints or []) + UNTYPED
     names = re.findall(r"[A-Za-z_][A-Za-z0-9_]*", QUALIFIER.sub("", ann))
     optional = "None" in names or "Optional" in names
     if "Any" in names:
@@ -1117,11 +1149,15 @@ def _values(ann: str, ctors: dict | None = None,
         if rest and any(n.lower() in CORPUS or (ctors and n in ctors) for n in rest):
             names = rest
         else:
-            return UNTYPED          # a type that says nothing gets the spread
+            # a type that says nothing gets the spread, and whatever the moved
+            # line was written to operate on
+            return list(hints or []) + UNTYPED
     made = _made(ann, producers)
     for n in names:
         if n.lower() in CORPUS:
-            vals = list(CORPUS[n.lower()]) + made
+            lead = [h for h in (hints or [])
+                    if n.lower() in ("str", "bytes") and h not in CORPUS[n.lower()]]
+            vals = lead + list(CORPUS[n.lower()]) + made
             return vals + ["None"] if optional else vals
     real = [n for n in names if n not in TYPING]
     if not real:
@@ -1132,7 +1168,7 @@ def _values(ann: str, ctors: dict | None = None,
         vals = made
     elif ctors is not None and head in ctors:
         vals = _ctor_exprs(head, ctors, aliases=aliases, calls=calls,
-                           depth=depth, producers=producers)
+                           depth=depth, producers=producers, hints=hints)
     else:
         # An imported or unknown type. Try the no-argument constructor: the name
         # is resolved in the target module's own namespace, and if it cannot be
@@ -1148,7 +1184,7 @@ def make_probes(change: Change, limit: int, seed: int = 0):
     if inst:
         cols.append(inst)
     for pname, ann in [*([] if inst else change.ctor_params), *change.params]:
-        v = _values(ann, change.ctors, change.producers)
+        v = _values(ann, change.ctors, change.producers, hints=change.hints)
         if v is None:
             return None, f"unmodelled type {ann!r} on {pname}"
         # A guard literal goes to the front. The sampler covers index 0 of every
