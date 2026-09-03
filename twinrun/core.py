@@ -273,9 +273,19 @@ def _describe(file: str, qualname: str, node, cls_node, base_node, base_cls) -> 
         return Change(file, qualname, params=params)
 
     if name in ("__init__", "__new__"):
-        # Observed indirectly: a changed constructor shows up in every method's
-        # recorded instance state.
-        return Change(file, qualname, skip="constructor, observed through its methods")
+        # A constructor returns nothing, so the instance it left behind is the
+        # answer, and comparing that is the whole probe. Reading it off the
+        # methods instead reported one attribute rename once per method and
+        # never at the line it happened on.
+        if decs:
+            return Change(file, qualname, skip=f"decorated ({', '.join(sorted(decs))})")
+        if _bad_sig(node) or _bad_sig(base_node):
+            return Change(file, qualname, skip="a keyword-only parameter has no default")
+        params = _reconcile(_sig_params(base_node, True), _sig_params(node, True),
+                            len(node.args.defaults))
+        if params is None:
+            return Change(file, qualname, skip=_sig_msg(base_node, node, True))
+        return Change(file, qualname, kind="ctor", params=params)
     unknown = decs - DECOR_OK
     if unknown:
         return Change(file, qualname, skip=f"decorated ({', '.join(sorted(unknown))})")
@@ -649,6 +659,16 @@ def changed_functions(repo, base, head, include_tests: bool = False) -> list[Cha
         tails = {q.rsplit(".", 1)[-1] for q in hit}
         callers = [q for q in pairs
                    if q not in hit and _refs(ht[q][0]) & tails][:CALLER_LIMIT]
+
+        # The constructor's own probe says what the instance became; the methods
+        # say what that costs. No method body names __init__, so `_refs` cannot
+        # find them and they have to be taken by class -- without which a commit
+        # touching nothing else is a single finding with nothing behind it.
+        for cls in sorted({q[:-9] for q in hit if q.endswith(".__init__")}):
+            done = set(hit) | set(callers)
+            callers += [q for q in pairs
+                        if q not in done and q.startswith(cls + ".")
+                        and not q.endswith(".__init__")][:CALLER_LIMIT]
 
         # The exclusion is off for this module's own producers: they are read
         # from base and frozen to base's value before either side runs, so a

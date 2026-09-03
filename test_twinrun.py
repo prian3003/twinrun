@@ -51,6 +51,22 @@ class Money:
         self.cents = cents
 
 
+class Box:
+    def __init__(self, size: int):
+        self.size = size
+
+    def volume(self) -> int:
+        return self.size ** 3
+
+
+class Crate:
+    def __init__(self, n: int):
+        self.n = n
+
+    def empty(self) -> bool:
+        return not self.n
+
+
 def fmt(m: Money) -> str:
     return "$%s" % (m.cents // 100)
 
@@ -153,6 +169,22 @@ def jitter(n: int) -> int:
 class Money:
     def __init__(self, cents: int):
         self.cents = cents
+
+
+class Box:
+    def __init__(self, size: int):
+        self.size = size * 2                      # only the constructor moved
+
+    def volume(self) -> int:
+        return self.size ** 3
+
+
+class Crate:
+    def __init__(self, n: int):
+        self.n = int(n)                           # rewritten, same behaviour
+
+    def empty(self) -> bool:
+        return not self.n
 
 
 def fmt(m: Money) -> str:
@@ -294,7 +326,10 @@ def main():
     assert "test file" in skipped.get("test_calc.py", ""), \
         f"test file should be skipped by name, got {skipped.get('test_calc.py')!r}"
     assert rep.flaky > 0, "flake filter never fired on a random() function"
-    assert "Cart.__init__" in skipped, "constructor should be skipped with a reason"
+    # A constructor answers with the instance it built: `[]` and `list()` leave
+    # the same one, so there is nothing to report and nothing to skip either.
+    assert "Cart.__init__" not in hit, "an equivalent constructor rewrite reported as a delta"
+    assert "Cart.__init__" not in skipped, f"got {skipped.get('Cart.__init__')!r}"
 
     # a docstring is a node, so an edit to one makes the AST differ -- but there is
     # nothing an output comparison can see, so it never enters the blast radius
@@ -340,7 +375,24 @@ def main():
     # `bytes`, which is the only way `owner` gets past its own prefix check.
     assert "owner" in hit, f"missed a change behind an unannotated producer; found {hit}"
 
-    assert rep.checked == 14, f"expected 14 callables twin-run, got {rep.checked}"
+    # Only Box.__init__ moved. Its own body is skipped -- a constructor returns
+    # nothing to compare -- and no method body names it, so the methods have to
+    # be taken by class or the commit is never probed at all. The moved line
+    # runs while the instance is built, before the call, so the trace has to
+    # cover the setup too or the finding is dropped as unreached.
+    assert "Box.volume" in hit, f"missed a constructor-only change; found {hit}"
+    assert "Box.volume" not in skipped, \
+        f"the constructor ran before the trace started: {skipped.get('Box.volume')!r}"
+    assert "Box.__init__" in hit, "the constructor's own change was not reported"
+
+    # Crate's constructor was rewritten and its methods answer the same either
+    # way, so there is no delta to fall back on: coverage of the edit is the
+    # only thing that can say the commit was verified rather than merely run.
+    assert "Crate.empty" not in hit, "an equivalent constructor rewrite reported as a delta"
+    assert "Crate.empty" not in skipped, \
+        f"the constructor ran outside the trace: {skipped.get('Crate.empty')!r}"
+
+    assert rep.checked == 19, f"expected 19 callables twin-run, got {rep.checked}"
 
     # `Any` inside a subscript is a type argument, not the type: a dict whose
     # values are Any is still a dict, and a file annotated IO[Any] is still a

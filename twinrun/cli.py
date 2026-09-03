@@ -14,6 +14,8 @@ def paint(s, code):
 
 def render_call(d):
     args = ", ".join(d.args[d.n_ctor:])
+    if d.kind == "ctor":
+        return f"{d.qualname.rsplit('.', 1)[0]}({args})"   # nobody calls __init__
     if d.kind == "instance":
         cls, meth = d.qualname.split(".", 1)
         recv = d.args[0] if d.built else f"{cls}({', '.join(d.args[:d.n_ctor])})"

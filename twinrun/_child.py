@@ -85,8 +85,9 @@ def safe_repr(v):
 
 
 def state_of(obj):
-    """Instance attributes after the call. Methods that mutate and return None
-    are invisible without this."""
+    """The instance's own attributes. Read either side of a call, so a method
+    that mutates and returns None is not invisible, and read once after a
+    constructor, which has nothing else to answer with."""
     try:
         return safe_repr(sorted(vars(obj).items()))
     except BaseException:
@@ -98,12 +99,32 @@ def result(kind, value, type_name, stdout="", mutated=""):
             "stdout": cap(stdout), "mutated": cap(mutated)}
 
 
+@contextlib.contextmanager
+def traced(seen):
+    """Record which of the commit's lines run inside this block.
+
+    Setting up a probe executes the target's code too. A commit that moves only
+    `__init__` runs entirely while the instance is being built, and a trace that
+    starts at the call itself sees none of it -- the probe was told it never
+    reached a change it had already run.
+    """
+    if not TRACE["lines"]:
+        yield
+        return
+    sys.settrace(tracer(TRACE["path"], TRACE["lines"], seen))
+    try:
+        yield
+    finally:
+        sys.settrace(None)
+
+
 def call(mod, env, payload, argsrc):
     kind, qualname, n_ctor = payload["kind"], payload["qualname"], payload["n_ctor"]
     buf = io.StringIO()
     seen = set()
     try:
-        vals = [eval(a, env) for a in argsrc]
+        with traced(seen):
+            vals = [eval(a, env) for a in argsrc]
     except BaseException as e:
         return result("probe-error", f"{type(e).__name__}: {e}", "probe-error"), False
     ctor_args, args = vals[:n_ctor], vals[n_ctor:]
@@ -116,8 +137,11 @@ def call(mod, env, payload, argsrc):
 
     inst = None
     try:
-        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
-            if kind == "instance":
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf), \
+                traced(seen):
+            if kind == "ctor":
+                fn = owner                    # the class, called to build one
+            elif kind == "instance":
                 # A construction harvested from the tests arrives already built;
                 # anything else is assembled from its constructor's arguments.
                 inst = ctor_args[0] if payload.get("built") else owner(*ctor_args)
@@ -129,15 +153,13 @@ def call(mod, env, payload, argsrc):
                       type(e).__name__, buf.getvalue()), False
 
     before = [safe_repr(a) for a in args]
+    was = state_of(inst) if inst is not None else None
     try:
-        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
-            if TRACE["lines"]:
-                sys.settrace(tracer(TRACE["path"], TRACE["lines"], seen))
-            try:
-                r = fn(*args)
-            finally:
-                sys.settrace(None)
-        out = result("return", safe_repr(r), type(r).__name__, buf.getvalue())
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf), \
+                traced(seen):
+            r = fn(*args)
+        val = state_of(r) if kind == "ctor" else safe_repr(r)
+        out = result("return", val, type(r).__name__, buf.getvalue())
     except BaseException as e:
         out = result("raise", f"{type(e).__name__}: {e}", type(e).__name__, buf.getvalue())
 
@@ -145,8 +167,13 @@ def call(mod, env, payload, argsrc):
     marks = []
     if after != before:
         marks.append("args=" + safe_repr(after))
-    if inst is not None:
-        marks.append("self=" + state_of(inst))
+    # What the call did to the instance, not what the instance held when it
+    # arrived. A commit that renames an attribute in __init__ leaves every
+    # method on the class holding a different-looking object while every one of
+    # them returns exactly what it used to -- one root cause, reported once per
+    # method, and none of them the place it happened.
+    if inst is not None and (now := state_of(inst)) != was:
+        marks.append("self=" + now)
     out["mutated"] = cap(" ".join(marks))
     return out, bool(seen)
 
@@ -237,7 +264,7 @@ def introspect(mod, payload):
         target = getattr(cls, name)
         ctor_src = cls
 
-    params, why = _params_of(target, drop_first=(kind == "instance"))
+    params, why = _params_of(target, drop_first=kind in ("instance", "ctor"))
     if params is None:
         return {"params": None, "reason": why}
 
