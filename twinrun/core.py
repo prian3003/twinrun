@@ -65,6 +65,7 @@ class Change:
     producers: dict = field(default_factory=dict)   # annotation -> call expressions
     built: list[str] = field(default_factory=list)  # constructions taken from the tests
     lines: dict = field(default_factory=dict)   # side -> line numbers the commit touched
+    guards: dict = field(default_factory=dict)  # parameter -> literals a branch demands
     skip: str | None = None
 
     @property
@@ -459,6 +460,62 @@ def _hunks(repo, base, head, f: str) -> dict[str, list[int]]:
     return out
 
 
+def _guard_key(n) -> str | None:
+    """The probe column a guard names: a bare parameter, or a `self` attribute
+    a constructor conventionally sets from one of its own."""
+    if isinstance(n, ast.Name):
+        return n.id
+    if isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name) \
+            and n.value.id == "self":
+        return n.attr
+    return None
+
+
+def _guards(node, lines) -> dict[str, list[str]]:
+    """Literals a name has to hold for one of `lines` to execute.
+
+    No corpus of edge values guesses the constant in `if version == 0x8f`, so
+    the probe calls the changed function and stops at the branch standing in
+    front of the change. That is most of what "no probe reached the change"
+    means, and the constant is sitting in the source: read it off the branch
+    enclosing the moved lines and try it first.
+
+    Only `==` and `in` are mined. A `<` names a direction rather than a value,
+    and the corpus already carries both ends of the range.
+    """
+    want, out = set(lines), {}
+    for n in ast.walk(node):
+        if not isinstance(n, (ast.If, ast.While)):
+            continue
+        body = {i for s in n.body
+                for i in range(s.lineno, (s.end_lineno or s.lineno) + 1)}
+        if not want & body:
+            continue
+        for c in ast.walk(n.test):
+            if not isinstance(c, ast.Compare) or len(c.ops) != 1:
+                continue
+            op, left, right = c.ops[0], c.left, c.comparators[0]
+            if isinstance(op, ast.Eq):
+                pairs = ((left, right), (right, left))   # either side can be it
+            elif isinstance(op, ast.In):
+                pairs = ((left, right),)                 # `in` is not symmetric
+            else:
+                continue
+            for name, val in pairs:
+                key = _guard_key(name)
+                if key is None or not _literal(val):
+                    continue
+                # `x in (a, b)` wants an element, not the container. A string
+                # is left whole: it is in itself.
+                vals = [ast.unparse(e) for e in val.elts] \
+                    if isinstance(op, ast.In) and isinstance(val, (ast.List, ast.Tuple, ast.Set)) \
+                    else [ast.unparse(val)]
+                for v in vals:
+                    if v not in out.setdefault(key, []):
+                        out[key].append(v)
+    return out
+
+
 DOC_HOLDERS = (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
 
 
@@ -580,6 +637,7 @@ def changed_functions(repo, base, head, include_tests: bool = False) -> list[Cha
         for qual in hit + callers:
             ch = _describe(f, qual, *ht[qual], *bt[qual])
             ch.ctors, ch.producers, ch.lines = ctors, made, touched
+            ch.guards = _guards(ht[qual][0], touched["head"])
             # A changed constructor anywhere disqualifies every harvested
             # construction: __init__ is resolved through inheritance, so the
             # one that moved is not always the one named on the class.
@@ -864,7 +922,11 @@ def make_probes(change: Change, limit: int, seed: int = 0):
         v = _values(ann, change.ctors, change.producers)
         if v is None:
             return None, f"unmodelled type {ann!r} on {pname}"
-        cols.append(v)
+        # A guard literal goes to the front. The sampler covers index 0 of every
+        # column in its first probe, so one probe carries every constant at once
+        # -- which is what a guard reading `a == 1 and b == 2` needs.
+        g = [x for x in change.guards.get(pname, []) if x not in v]
+        cols.append(g + v)
     if not cols:
         return [[]], None
     total = 1

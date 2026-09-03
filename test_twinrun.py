@@ -51,6 +51,12 @@ def gate(n: int) -> int:
     return 0
 
 
+def warp(n: int) -> int:
+    if n % 7919 == 33:
+        return 1
+    return 0
+
+
 def tally(xs):
     return sum(xs)
 
@@ -116,7 +122,13 @@ def label(n: int) -> str:
 
 def gate(n: int) -> int:
     if n == 987654321:
-        return 2                                  # behind a branch no probe hits
+        return 2                                  # guarded by a literal, minable
+    return 0
+
+
+def warp(n: int) -> int:
+    if n % 7919 == 33:
+        return 2                                  # guarded by arithmetic, not
     return 0
 
 
@@ -222,13 +234,17 @@ def main():
     assert "tally" not in hit, "an annotation edit reported as a behaviour delta"
     assert "tally" not in skipped, "an annotation edit cost a probe budget"
 
-    # a real line change the corpus cannot reach: running the function is not
-    # verifying the edit, so it is skipped rather than counted as checked
-    assert "gate" not in hit, "an unreachable branch reported as a behaviour delta"
-    assert "no probe reached" in skipped.get("gate", ""), \
-        f"unreached edit should not count as checked, got {skipped.get('gate')!r}"
+    # a change behind `if n == 987654321`: no corpus guesses that, but it is a
+    # literal in the source, so the guard miner hands it over as a probe value
+    assert "gate" in hit, f"missed a change behind a mined guard literal; found {hit}"
 
-    assert rep.checked == 9, f"expected 9 callables twin-run, got {rep.checked}"
+    # the same shape with the constant behind arithmetic: nothing to mine, so it
+    # stays unreached -- running the function is not verifying the edit
+    assert "warp" not in hit, "an unreachable branch reported as a behaviour delta"
+    assert "no probe reached" in skipped.get("warp", ""), \
+        f"unreached edit should not count as checked, got {skipped.get('warp')!r}"
+
+    assert rep.checked == 10, f"expected 10 callables twin-run, got {rep.checked}"
 
     # Reaching the change is the whole chain -- hunk parse, payload, line trace,
     # tally -- and any broken link in it reports zero.
