@@ -42,6 +42,17 @@ CORPUS = {
     "io": ["__import__('io').BytesIO(b'')", "__import__('io').BytesIO(b'a.b')"],
     "binaryio": ["__import__('io').BytesIO(b'')", "__import__('io').BytesIO(b'a.b')"],
     "textio": ["__import__('io').StringIO('')", "__import__('io').StringIO('a.b')"],
+    # The type argument of a container is not the container. `Iterable[V]` was
+    # resolving to the TypeVar and probed with `V()`, which is not a name that
+    # exists; the abstract names get the concrete corpus of what they describe,
+    # and because they stand ahead of the element type in the annotation they
+    # win the search below.
+    "iterable": ["[]", "[1]", "[1, 2, 3]", "['a', 'b']"],
+    "sequence": ["[]", "[1]", "[1, 2, 3]", "['a', 'b']"],
+    "iterator": ["iter([])", "iter([1, 2, 3])", "iter(['a', 'b'])"],
+    "mapping": ["{}", "{'a': 1}", "{'a': 1, 'b': 2}"],
+    "mutablemapping": ["{}", "{'a': 1}", "{'a': 1, 'b': 2}"],
+    "callable": ["(lambda *a, **k: None)", "str", "len"],
     "any": ["0", "1", "-1", "''", "'a'", "[]", "None", "True"],
     "object": ["0", "'a'", "None"],
 }
@@ -1136,6 +1147,14 @@ def _values(ann: str, ctors: dict | None = None,
         return made + list(hints or []) + UNTYPED
     names = re.findall(r"[A-Za-z_][A-Za-z0-9_]*", QUALIFIER.sub("", ann))
     optional = "None" in names or "Optional" in names
+    # `none` is a corpus type, so the None in `Context | None` was answering for
+    # the whole annotation: the search below walks the names in order, misses
+    # Context, and settles on the None that only ever meant optional. Every
+    # parameter typed as an optional project type was probed with None and
+    # nothing else -- which is why click's ProgressBar, whose iterable is
+    # `Iterable[V] | None`, raised in setup for all thirteen of its methods.
+    if len(names) > 1:
+        names = [n for n in names if n != "None"]
     if "Any" in names:
         # `Any` says nothing on its own. But `dict[str, Any]` and `IO[Any]` say
         # plenty: the type argument is not the type, and taking the whole thing
@@ -1162,16 +1181,23 @@ def _values(ann: str, ctors: dict | None = None,
     # Optional[Signer] is a Signer. Prefer a class this repository defines.
     head = next((n for n in real if ctors and n in ctors), real[-1])
     if made:
-        vals = made
-    elif ctors is not None and head in ctors:
+        return made + ["None"] if optional else made
+    if ctors is not None and head in ctors:
         vals = _ctor_exprs(head, ctors, aliases=aliases, calls=calls,
                            depth=depth, producers=producers, hints=hints)
-    else:
-        # An imported or unknown type. Try the no-argument constructor: the name
-        # is resolved in the target module's own namespace, and if it cannot be
-        # built the failure is identical on both sides.
-        vals = [f"{head}()"]
-    return vals + ["None"] if optional else vals
+        # None goes first here, not last. A class that wants another of its own
+        # kind -- click's Context has a Context parent -- recurses until the
+        # depth runs out and bottoms out on the no-argument call below, which
+        # raises for a missing required argument; nested inside an otherwise
+        # good construction that guess takes the whole of it down, and all four
+        # probes with it. A parameter that accepts None always has one probe
+        # that works, and the built instances still follow it.
+        return ["None"] + vals if optional else vals
+    # An imported or unknown type, or one the recursion has no depth left to
+    # build. Try the no-argument constructor: the name is resolved in the target
+    # module's own namespace, and if it cannot be built the failure is identical
+    # on both sides. None is not a guess, so an optional parameter takes it.
+    return ["None"] if optional else [f"{head}()"]
 
 
 def make_probes(change: Change, limit: int, seed: int = 0):

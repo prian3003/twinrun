@@ -483,6 +483,20 @@ def main():
     assert "BytesIO" in _values("t.IO[t.Any]")[0], "a file parameter is not modelled"
     assert _values("t.Any") == _values(""), "a bare Any should still get the spread"
 
+    # `none` is a corpus type, so the None that only ever meant "optional" was
+    # answering for the whole annotation: the search walks the names in order,
+    # misses a type it does not model, and settles on the None behind it. Every
+    # optional parameter of a project type was probed with None and nothing
+    # else -- which is why click's ProgressBar, whose iterable is
+    # `Iterable[V] | None`, raised in setup for all thirteen of its methods.
+    ctx = {"Ctx": [("n", "str")]}
+    assert any(v.startswith("Ctx(") for v in _values("Ctx | None", ctx)), \
+        f"the None of an optional answered for the type: {_values('Ctx | None', ctx)}"
+    # and the element type is not the container: Iterable[V] is a list, not a
+    # TypeVar to call
+    assert _values("cabc.Iterable[V] | None")[0] == "[]", \
+        f"a container resolved to its type argument: {_values('cabc.Iterable[V] | None')}"
+
     # A str column drops a hint the corpus already holds; an Any column keeps
     # every one. So the two fall out of step, and click's zsh formatter -- which
     # escapes a colon in the value if and only if the help is not the sentinel
