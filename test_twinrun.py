@@ -40,6 +40,11 @@ def where() -> str:
     return os.getcwd()
 
 
+def label(n: int) -> str:
+    """Name."""
+    return "n=%d" % n
+
+
 def area(w: int) -> int:
     return w * w
 
@@ -92,6 +97,11 @@ def where() -> str:
     import os
     cwd = os.getcwd()                             # rewritten, same behaviour
     return cwd
+
+
+def label(n: int) -> str:
+    """The name to print for a count."""          # docstring only, never executed
+    return "n=%d" % n
 
 
 def area(w: int, h: int = 2) -> int:              # appended an optional parameter
@@ -181,6 +191,12 @@ def main():
         f"test file should be skipped by name, got {skipped.get('test_calc.py')!r}"
     assert rep.flaky > 0, "flake filter never fired on a random() function"
     assert "Cart.__init__" in skipped, "constructor should be skipped with a reason"
+
+    # a docstring is in the AST, so the callable is in the blast radius, but it is
+    # not a line anyone executes: running the function is not verifying the edit
+    assert "label" not in hit, "a docstring edit reported as a behaviour delta"
+    assert "no probe reached" in skipped.get("label", ""), \
+        f"docstring-only edit should not count as checked, got {skipped.get('label')!r}"
 
     assert rep.checked == 9, f"expected 9 callables twin-run, got {rep.checked}"
 

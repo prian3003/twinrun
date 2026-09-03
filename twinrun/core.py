@@ -1006,7 +1006,7 @@ def verify(repo, base, head, limit=24, timeout=20.0, seed=0, repeats=2,
                     rep.skipped.append((ch.qualname, "no usable inputs could be built"))
                     continue
 
-                rep.checked += 1
+                kept, hits, found = 0, 0, []
                 for i, args in enumerate(probes):
                     bs = [runs["base", k][i] for k in range(repeats)]
                     hs = [runs["head", k][i] for k in range(repeats)]
@@ -1015,13 +1015,27 @@ def verify(repo, base, head, limit=24, timeout=20.0, seed=0, repeats=2,
                         rep.flaky += 1
                         continue
                     rep.probes += 1
+                    kept += 1
                     if i < len(reached) and reached[i]:
-                        rep.reached += 1
+                        hits += 1
                     if bs[0] != hs[0]:
-                        rep.deltas.append(Delta(
+                        found.append(Delta(
                             ch.file, ch.qualname, args, bs[0], hs[0], ch.kind,
                             1 if ch.instances else len(ch.ctor_params),
                             bool(ch.instances)))
+
+                # A probe that never executed a moved line could not have been
+                # affected by the edit, so a callable no probe reached was run,
+                # not verified. A delta overrides that: a moved default argument
+                # or class attribute is evaluated at import, before the trace
+                # starts, and differs without any moved line being stepped on.
+                if kept and not hits and not found and any(ch.lines.values()):
+                    rep.skipped.append((ch.qualname, "no probe reached the change"))
+                    continue
+
+                rep.checked += 1
+                rep.reached += hits
+                rep.deltas.extend(found)
         finally:
             git(repo, "worktree", "remove", "--force", str(bw), check=False)
             git(repo, "worktree", "remove", "--force", str(hw), check=False)

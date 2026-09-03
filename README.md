@@ -84,6 +84,16 @@ Exits 1 when there is a finding, 2 on a usage error, so it drops into CI as-is.
    a subprocess on each side with the same inputs. Return value, type, exception,
    stdout, argument mutation and instance state are all recorded. A method that
    returns `None` and quietly changes `self` is the common case, not an edge case.
+
+   A line trace scoped to the target file records which probes executed a line
+   the commit actually moved, because calling a changed callable is not the same
+   as reaching the change inside it. Across 41 real itsdangerous commits, 1271 of
+   4262 probes reach it; the other 70% run the function around the edit. A
+   callable that nothing reached and that produced no delta is reported as
+   skipped rather than counted as checked — on that sweep, 108 of 198 callables
+   were being called verified without a probe ever touching the diff. A delta
+   overrides the reach test: a moved default argument or class attribute is
+   evaluated at import, before the trace starts, and differs anyway.
 6. **Normalise** — the two revisions are checked out at different paths, so
    anything that surfaces its own location (a cwd, a `__file__`, a path inside an
    error message) would differ for a reason that has nothing to do with the
@@ -138,8 +148,8 @@ needs a value, so the callable is probed on its positional parameters.
 
 Skipped, with the reason printed: `async def`, other decorators, a keyword-only
 parameter with no default, `__init__` (observed through the instance state its methods report), signatures that
-changed in a way that leaves no identical-input comparison, and callables for which
-no usable input could be built. Untyped parameters get a generic spread, which
+changed in a way that leaves no identical-input comparison, callables for which
+no usable input could be built, and callables no probe reached. Untyped parameters get a generic spread, which
 usually lands on `TypeError` identically on both sides and reports nothing.
 
 ## Prior art
