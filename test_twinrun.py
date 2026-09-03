@@ -65,6 +65,12 @@ def norm(s: str) -> str:
     return s.strip()
 
 
+def parse_tag(v):
+    if v.startswith("tag:"):
+        return v[4:]
+    return ""
+
+
 def area(w: int) -> int:
     return w * w
 
@@ -144,6 +150,12 @@ def norm(text: str) -> str:                       # parameter renamed, signature
     return text.strip()                           # and body, nothing observable
 
 
+def parse_tag(v):                                 # unannotated: the corpus spread
+    if v.startswith("tag:"):                      # never gets past this guard
+        return v[4:].upper()
+    return ""
+
+
 def area(w: int, h: int = 2) -> int:              # appended an optional parameter
     return w * h                                  # ...and the one-arg answer moved
 
@@ -169,6 +181,18 @@ class Cart:
 '''
 
 
+# The suite is read for inputs, so it carries the one string that gets past
+# parse_tag's guard -- nobody's edge-value corpus writes "tag:" and then content.
+TESTS = '''
+def check() -> int:
+    return %d
+
+
+def test_parse_tag():
+    assert parse_tag("tag:0123456789abcdef") == "0123456789abcdef"
+'''
+
+
 def git(repo, *args):
     subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True)
 
@@ -178,11 +202,11 @@ def fixture(root: Path):
     git(root, "config", "user.email", "dev@example.com")
     git(root, "config", "user.name", "dev")
     (root / "calc.py").write_text(BASE)
-    (root / "test_calc.py").write_text("def check() -> int:\n    return 1\n")
+    (root / "test_calc.py").write_text(TESTS % 1)
     git(root, "add", "-A")
     git(root, "commit", "-qm", "add calc")
     (root / "calc.py").write_text(HEAD)
-    (root / "test_calc.py").write_text("def check() -> int:\n    return 2\n")
+    (root / "test_calc.py").write_text(TESTS % 2)
     git(root, "add", "-A")
     git(root, "commit", "-qm", "tweak calc")
 
@@ -248,6 +272,10 @@ def main():
     assert "norm" not in hit, "a parameter rename reported as a behaviour delta"
     assert "norm" not in skipped, "a parameter rename cost a probe budget"
 
+    # an unannotated parameter still gets the producers and the fixtures: the
+    # value that gets past a guard is the one the test suite wrote down
+    assert "parse_tag" in hit, f"missed a change behind an unannotated parameter; found {hit}"
+
     # a change behind `if n == 987654321`: no corpus guesses that, but it is a
     # literal in the source, so the guard miner hands it over as a probe value
     assert "gate" in hit, f"missed a change behind a mined guard literal; found {hit}"
@@ -258,7 +286,7 @@ def main():
     assert "no probe reached" in skipped.get("warp", ""), \
         f"unreached edit should not count as checked, got {skipped.get('warp')!r}"
 
-    assert rep.checked == 10, f"expected 10 callables twin-run, got {rep.checked}"
+    assert rep.checked == 11, f"expected 11 callables twin-run, got {rep.checked}"
 
     # `Any` inside a subscript is a type argument, not the type: a dict whose
     # values are Any is still a dict, and a file annotated IO[Any] is still a

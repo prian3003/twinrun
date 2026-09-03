@@ -910,10 +910,22 @@ def _made(ann: str, names: list[str], producers: dict | None, limit: int = 4) ->
     return out[:limit]
 
 
+GUESSED = 3         # producer values offered per type to an unannotated parameter
+
+
 def _values(ann: str, ctors: dict | None = None,
             producers: dict | None = None) -> list[str] | None:
     if not ann:
-        return UNTYPED
+        # An unannotated parameter used to see nothing but the spread, which
+        # threw away every producer and fixture the module had. A codebase with
+        # no type hints is one where that is all of them, and the spread is the
+        # part that cannot work: the value that gets past a signature check is
+        # the token the test suite wrote down, never `0`. They go in front,
+        # because the spread lands on the same TypeError on both sides and
+        # reports nothing whatever order it is tried in.
+        made = (_made("str", ["str"], producers, GUESSED)
+                + _made("bytes", ["bytes"], producers, GUESSED))
+        return made + UNTYPED if made else UNTYPED
     names = re.findall(r"[A-Za-z_][A-Za-z0-9_]*", QUALIFIER.sub("", ann))
     optional = "None" in names or "Optional" in names
     if "Any" in names:
