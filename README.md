@@ -111,6 +111,15 @@ Exits 1 when there is a finding, 2 on a usage error, so it drops into CI as-is.
    itself the probe is non-deterministic, and it is dropped rather than reported.
    Clocks, RNG, hash ordering and network calls come out here.
 
+   The runs interleave the two sides rather than finishing one side and then the
+   other, which is what lets the filter see wall-clock drift. A producer that
+   embeds a timestamp gives the same answer twice in a row and a different one a
+   second later, so back-to-back base runs agree with each other, head's agree
+   with each other, and the two sides differ for a reason that has nothing to do
+   with the commit. Interleaved, both sides straddle the same window and the
+   drift surfaces as a side disagreeing with itself. Two runs of the itsdangerous
+   sweep now report the same 53 findings; before, the count moved between runs.
+
    Two runs catch noise with a wide range of outcomes. A target that returns one
    of only a handful of values can still agree with itself by chance — roughly a
    one-in-six coin flip stays quiet about 17% of the time — so raise `--repeats`

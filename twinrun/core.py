@@ -973,6 +973,56 @@ def _agree(bsig, hsig, required_only: bool):
     return [(n, a) for n, a, d in trimmed if not (required_only and d)]
 
 
+def _sweep(ch: Change, probes, bw: Path, hw: Path, repeats: int, timeout: float,
+           td: Path):
+    """Run both sides on these probes and tally the result.
+
+    The repeats interleave the two sides rather than running each side's to
+    completion, which is what makes the flake filter see wall-clock drift. A
+    producer that embeds a timestamp -- signing a token, stamping a record --
+    gives the same answer twice in a row and a different one a second later, so
+    back-to-back base runs agree with each other, the head runs agree with each
+    other, and the two sides disagree for a reason that has nothing to do with
+    the commit. Interleaved, each side straddles the same window, and the drift
+    shows up where it belongs: as a side disagreeing with itself.
+    """
+    runs, reached = {}, []
+    for i in range(repeats):
+        for side, wt in (("base", bw), ("head", hw)):
+            r, hit, err = run_side(side, wt, ch, probes, timeout, td)
+            if r is None:
+                return None, f"{side}: {err}"
+            runs[side, i] = r
+            # Either side reaching the edit is coverage of it: a probe can run
+            # the removed lines and none of the added ones.
+            reached = [a or b for a, b in
+                       itertools.zip_longest(reached, hit, fillvalue=False)]
+
+    # Attempting to build an input and failing is not coverage. Say so rather
+    # than counting the callable as verified.
+    dead = {"probe-error", "setup-raise"}
+    if all(r["kind"] in dead for r in runs["base", 0]):
+        return None, "no usable inputs could be built"
+
+    kept = hits = flaky = 0
+    found = []
+    for i, args in enumerate(probes):
+        bs = [runs["base", k][i] for k in range(repeats)]
+        hs = [runs["head", k][i] for k in range(repeats)]
+        # a side that disagrees with itself is unverifiable, not a finding
+        if any(x != bs[0] for x in bs) or any(x != hs[0] for x in hs):
+            flaky += 1
+            continue
+        kept += 1
+        if i < len(reached) and reached[i]:
+            hits += 1
+        if bs[0] != hs[0]:
+            found.append(Delta(ch.file, ch.qualname, args, bs[0], hs[0], ch.kind,
+                               1 if ch.instances else len(ch.ctor_params),
+                               bool(ch.instances)))
+    return (kept, hits, flaky, found), None
+
+
 def verify(repo, base, head, limit=24, timeout=20.0, seed=0, repeats=2,
            include_tests=False) -> Report:
     repo = Path(repo).resolve()
@@ -1011,48 +1061,17 @@ def verify(repo, base, head, limit=24, timeout=20.0, seed=0, repeats=2,
                     rep.skipped.append((ch.qualname, why))
                     continue
 
-                runs, reached = {}, []
-                for side, wt in (("base", bw), ("head", hw)):
-                    for i in range(repeats):
-                        r, hit, err = run_side(side, wt, ch, probes, timeout, td)
-                        if r is None:
-                            rep.skipped.append((ch.qualname, f"{side}: {err}"))
-                            runs = None
-                            break
-                        runs[side, i] = r
-                        # Either side reaching the edit is coverage of it: a probe
-                        # can run the removed lines and not the added ones.
-                        reached = [a or b for a, b in
-                                   itertools.zip_longest(reached, hit, fillvalue=False)]
-                    if runs is None:
-                        break
-                if runs is None:
+                res, err = _sweep(ch, probes, bw, hw, repeats, timeout, td)
+                if res is None:
+                    rep.skipped.append((ch.qualname, err))
                     continue
 
-                # Attempting to build an input and failing is not coverage. Say so
-                # rather than counting the callable as verified.
-                dead = {"probe-error", "setup-raise"}
-                if all(r["kind"] in dead for r in runs["base", 0]):
-                    rep.skipped.append((ch.qualname, "no usable inputs could be built"))
-                    continue
-
-                kept, hits, found = 0, 0, []
-                for i, args in enumerate(probes):
-                    bs = [runs["base", k][i] for k in range(repeats)]
-                    hs = [runs["head", k][i] for k in range(repeats)]
-                    # a side that disagrees with itself is unverifiable, not a finding
-                    if any(x != bs[0] for x in bs) or any(x != hs[0] for x in hs):
-                        rep.flaky += 1
-                        continue
-                    rep.probes += 1
-                    kept += 1
-                    if i < len(reached) and reached[i]:
-                        hits += 1
-                    if bs[0] != hs[0]:
-                        found.append(Delta(
-                            ch.file, ch.qualname, args, bs[0], hs[0], ch.kind,
-                            1 if ch.instances else len(ch.ctor_params),
-                            bool(ch.instances)))
+                kept, hits, flaky, found = res
+                # Cost is counted whatever the verdict: these probes ran, and the
+                # flake filter really did fire. Only checked, reached and the
+                # deltas are a claim about what the sweep established.
+                rep.probes += kept
+                rep.flaky += flaky
 
                 # A probe that never executed a moved line could not have been
                 # affected by the edit, so a callable no probe reached was run,
