@@ -301,6 +301,40 @@ launch a real editor and a real browser twice per side and end in a timeout with
 nothing to show. The network is refused outright. This is a shim, not a sandbox:
 it stops what a probe stumbles into, not code that means to escape.
 
+## Does it catch real regressions
+
+The question a differential tool has to answer is whether it reports a change
+someone later had to undo, at the commit that caused it. `git revert` gives a
+label nobody has to argue about: the maintainers named the commit and said the
+whole thing was unwanted.
+
+Fifteen reverted commits across itsdangerous, click, jinja and werkzeug. Six
+never ran — Python 2 sources, and revisions wanting a `markupsafe` old enough
+to still export `soft_unicode`, which no longer builds. Two changed nothing
+executable (a directory rename, a test-config edit) and correctly produced
+nothing. Of the seven that ran, four are reported:
+
+| | commit | what twinrun says |
+|---|---|---|
+| ✓ | itsdangerous `f513b48d` | every token the library issues changed bytes |
+| ✓ | click `e798f64f` | `sensible-editor "0"` became `sensible-editor ''` |
+| ✓ | werkzeug `2c2cc69b` | `is_known_charset` answers differently |
+| ✓ | jinja `1167525b` | a delta in `main` (a rename; a weak pair) |
+| ✗ | click `6c4a77ba` | runs, reaches nothing that separates the two |
+| ✗ | click `8bc91271` | needs a colon and a non-sentinel help in one probe |
+| ✗ | werkzeug `0cd2da5d` | thread start ordering, which no probe observes |
+
+`python3 regressions.py <repo>` reproduces the table on any repository, and CI
+runs it against itsdangerous on every push, so a change here that stops the
+tool catching `f513b48d` fails the build.
+
+What a framework costs is worth stating plainly. Across 58 click commits, the
+tool checks 381 callables and lands 4816 of 10778 probes on a changed line —
+and skips 256 callables because it could not build an input for them. click's
+world is `Context`, `Command`, `Option` and `Parameter`, each wanting another
+of its own kind, and two levels of constructor synthesis is not the whole of
+it. A library of leaf types like itsdangerous skips 4.
+
 ## Prior art
 
 Most tools that look adjacent are solving a different problem.
