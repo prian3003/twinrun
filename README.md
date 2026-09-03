@@ -39,7 +39,7 @@ Exits 1 when there is a finding, 2 on a usage error, so it drops into CI as-is.
    Comments, formatting, docstrings, annotations and parameter names never reach
    step 2. Each of them is a node, so editing one makes the AST differ, and none
    of them is something an output comparison can see. Dropping them takes the
-   itsdangerous sweep below from 4262 probes to 2807 and removes five commits
+   itsdangerous sweep below from 4262 probes to 2847 and removes five commits
    from it entirely, one of which was spending 264 probes on a docs split.
    Annotations are dropped from parameters and return types only: the one on a
    class-level assignment stays, because a dataclass field annotation is not a
@@ -66,7 +66,12 @@ Exits 1 when there is a finding, 2 on a usage error, so it drops into CI as-is.
    taken as a construction -- `Signer("secret-key")`, or the same thing written
    as a `partial` in a pytest fixture. Two literals rank ahead of the producers
    and the rest behind, so the input someone wrote down competes with the input
-   a round trip builds instead of always losing to it. Producers are read from
+   a round trip builds instead of always losing to it. The literals are ranked
+   among themselves first, because a suite's long strings are a mix of two things
+   and only one of them is an input: `'[42].-9cNi0CxsSB3hZPNCe9a2eEs1ZM'` is a
+   payload, a separator and a digest, while `'not supported'` is prose quoted
+   from an assertion about an error message. Whitespace says prose, a separator
+   says structure. Producers are read from
    the base revision only. A function that exists solely in head would raise
    `NameError` on one side and return a value on the other, which is a delta on
    every callable that consumes its type. Anything that changed is excluded, directly or by
@@ -83,6 +88,11 @@ Exits 1 when there is a finding, 2 on a usage error, so it drops into CI as-is.
    Any commit that touches an `__init__` gives them up, since `__init__` resolves
    through inheritance and the one that moved is not always the one named.
 
+   An unannotated parameter gets the producers and the fixtures too, not just
+   the spread. A codebase with no type hints is exactly the one where the
+   harvest is all there is, and the value that gets past a signature check is
+   the token the test suite wrote down, never `0`.
+
    A change behind `if version == 0x8f` is not something an edge-value corpus
    guesses, so the constant is read off the branch that encloses the moved lines
    and put at the front of that parameter's column, where the first probe picks
@@ -96,6 +106,14 @@ Exits 1 when there is a finding, 2 on a usage error, so it drops into CI as-is.
    how a file parameter ends up probed with `0`, raising `'int' object has no
    attribute 'read'` on the first line of every probe, so `Any` only decides the
    answer when nothing modelled is left underneath it.
+
+   Every value in every column is covered before anything is sampled, with the
+   columns advancing together, because a change that only shows up when two
+   parameters are both interesting is invisible to a sweep that holds one of
+   them at zero. What budget is left after that goes one factor at a time —
+   vary one column, hold the others at their first value — since advancing them
+   together also pairs a signed token with a garbage max age, and the call dies
+   before the signature is ever checked.
 
    A parameter annotated with one of your own classes gets a real instance built
    for it, by probing that class's `__init__` one level deep. A constructor's
@@ -113,10 +131,10 @@ Exits 1 when there is a finding, 2 on a usage error, so it drops into CI as-is.
 
    A line trace scoped to the target file records which probes executed a line
    the commit actually moved, because calling a changed callable is not the same
-   as reaching the change inside it. Across 41 real itsdangerous commits, 1284 of
-   2807 probes reach it; the rest run the function around the edit. A
+   as reaching the change inside it. Across 41 real itsdangerous commits, 1349 of
+   2847 probes reach it; the rest run the function around the edit. A
    callable that nothing reached and that produced no delta is reported as
-   skipped rather than counted as checked — on that sweep, 41 of 126 callables
+   skipped rather than counted as checked — on that sweep, 39 of 126 callables
    were being called verified without a probe ever touching the diff. A delta
    overrides the reach test: a moved default argument or class attribute is
    evaluated at import, before the trace starts, and differs anyway.
@@ -137,7 +155,7 @@ Exits 1 when there is a finding, 2 on a usage error, so it drops into CI as-is.
    with each other, and the two sides differ for a reason that has nothing to do
    with the commit. Interleaved, both sides straddle the same window and the
    drift surfaces as a side disagreeing with itself. Two runs of the itsdangerous
-   sweep now report the same 53 findings; before, the count moved between runs.
+   sweep now report the same 55 findings; before, the count moved between runs.
 
    Two runs catch noise with a wide range of outcomes. A target that returns one
    of only a handful of values can still agree with itself by chance — roughly a
