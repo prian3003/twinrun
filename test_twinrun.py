@@ -61,6 +61,10 @@ def tally(xs):
     return sum(xs)
 
 
+def norm(s: str) -> str:
+    return s.strip()
+
+
 def area(w: int) -> int:
     return w * w
 
@@ -134,6 +138,10 @@ def warp(n: int) -> int:
 
 def tally(xs: list) -> int:                       # annotation only, never executed
     return sum(xs)
+
+
+def norm(text: str) -> str:                       # parameter renamed, signature
+    return text.strip()                           # and body, nothing observable
 
 
 def area(w: int, h: int = 2) -> int:              # appended an optional parameter
@@ -233,6 +241,12 @@ def main():
     # import: the twin run compares outputs, not `__annotations__`
     assert "tally" not in hit, "an annotation edit reported as a behaviour delta"
     assert "tally" not in skipped, "an annotation edit cost a probe budget"
+
+    # only a positional call is ever made, so a parameter name is not observable
+    # -- and the rename moves the body with it, which is what makes it look like
+    # a change until the names go into positional slots
+    assert "norm" not in hit, "a parameter rename reported as a behaviour delta"
+    assert "norm" not in skipped, "a parameter rename cost a probe budget"
 
     # a change behind `if n == 987654321`: no corpus guesses that, but it is a
     # literal in the source, so the guard miner hands it over as a probe value

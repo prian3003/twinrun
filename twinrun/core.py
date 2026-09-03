@@ -537,9 +537,32 @@ def _shape(node) -> str:
 
     Annotations are dropped from parameters and return types only. The one on a
     class-level assignment stays, because a dataclass field annotation is not a
-    comment on the behaviour, it is the behaviour.
+    comment on the behaviour, it is the behaviour. Parameter names go the same
+    way, into positional slots.
     """
     node = copy.deepcopy(node)
+
+    # A parameter name is not observable through a positional call, and a
+    # positional call is the only kind a twin run makes: `loads(s)` and
+    # `loads(payload)` are the same function to it. Renaming to slots keeps a
+    # rename out of the radius, and the body has to move with the signature --
+    # the name appears in both. Renaming by position rather than by identity is
+    # what makes it safe: `f(a, b) -> a` and `f(b, a) -> b` collapse, and they
+    # should, because `f(1, 2)` is 1 on both sides.
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        a = node.args
+        slots = {p.arg: f"_p{i}" for i, p in enumerate(
+            [*a.posonlyargs, *a.args, *([a.vararg] if a.vararg else []),
+             *a.kwonlyargs, *([a.kwarg] if a.kwarg else [])])}
+        for n in ast.walk(node):
+            if isinstance(n, ast.arg) and n.arg in slots:
+                n.arg = slots[n.arg]
+            # A nested scope that shadows the name is renamed too. That makes
+            # the two sides differ where they might not have, which leaves the
+            # callable in the radius -- the safe direction to be wrong in.
+            elif isinstance(n, ast.Name) and n.id in slots:
+                n.id = slots[n.id]
+
     for n in ast.walk(node):
         if isinstance(n, DOC_HOLDERS) and ast.get_docstring(n) is not None:
             n.body = n.body[1:] or [ast.Pass()]
