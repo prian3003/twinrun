@@ -23,7 +23,7 @@ twinrun main..HEAD
          head  return       NoneType   None
                after  self=[('items', [2]), ('rate', 0)]
 
-2 findings from 30 calls · 6 callables checked · 72 probes · 8 flaky dropped
+2 findings from 30 calls · 6 callables checked · 72 probes (54 reached the change) · 8 flaky dropped
 ```
 
 Exits 1 when there is a finding, 2 on a usage error, so it drops into CI as-is.
@@ -101,6 +101,12 @@ Exits 1 when there is a finding, 2 on a usage error, so it drops into CI as-is.
    corpus of edge values (`0`, `-1`, `2**31`, `''`, `float('nan')`, `[]`, …). For a
    method, the constructor's parameters are probed in the same sweep, so the
    instance is part of the input.
+
+   An annotation names several things and only one of them is the type. The
+   search takes the first name the corpus models, reading a container ahead of
+   its element type — `Iterable[V]` is a list, not a TypeVar to call — and
+   ignoring the `None` of an optional, which is a second value the parameter
+   accepts and not an answer to what it is.
 
    A construction harvested from the tests replaces that sweep when there is one:
    a constructor with six parameters spends six probe columns getting itself
@@ -399,9 +405,11 @@ single column and holds the rest at their first value, so a change that only
 shows up when two unremarkable parameters are both unusual stays invisible.
 
 Constructor synthesis stops at two levels: a class whose `__init__` wants a
-project type gets one built, and that one's own project-typed parameters fall
-back to a no-argument call. Caller propagation stops at one level, and matches
-by name within a file rather than resolving the call graph.
+project type gets one built, and that one's own project-typed parameters take
+`None` where they are optional and a no-argument call where they are not. A
+required third level is therefore a dead probe whenever the class it names has
+a required parameter of its own. Caller propagation stops at one level, and
+matches by name within a file rather than resolving the call graph.
 
 `regressions.py` scores the tool against regressions a real repository already
 admitted to. A commit someone later ran `git revert` on is a pair whose label
