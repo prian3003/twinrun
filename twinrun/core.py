@@ -462,19 +462,29 @@ def _hunks(repo, base, head, f: str) -> dict[str, list[int]]:
 DOC_HOLDERS = (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
 
 
-def _nodoc(node) -> str:
-    """`ast.dump` with the docstrings taken out.
+def _shape(node) -> str:
+    """`ast.dump` cut down to what a twin run can observe.
 
-    A docstring is a node, so editing one makes the AST differ and puts the
-    callable in the blast radius, where it spends a full probe budget proving
-    that nothing an output comparison can see has moved. Nothing has: a
-    docstring is not an executed line, and the twin run compares return values,
-    exceptions, stdout and mutation, not `__doc__`.
+    Docstrings and annotations are both nodes, so editing either makes the AST
+    differ and puts the callable in the blast radius, where it spends a full
+    probe budget proving that nothing an output comparison can see has moved.
+    Neither is an executed line. A docstring is a constant nothing here reads,
+    and an annotation is a string under `from __future__ import annotations` or
+    else evaluated once at import; the twin run compares return values,
+    exceptions, stdout and mutation, not `__doc__` or `__annotations__`.
+
+    Annotations are dropped from parameters and return types only. The one on a
+    class-level assignment stays, because a dataclass field annotation is not a
+    comment on the behaviour, it is the behaviour.
     """
     node = copy.deepcopy(node)
     for n in ast.walk(node):
         if isinstance(n, DOC_HOLDERS) and ast.get_docstring(n) is not None:
             n.body = n.body[1:] or [ast.Pass()]
+        if isinstance(n, ast.arg):
+            n.annotation = None
+        elif isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            n.returns = None
     return ast.dump(node)
 
 
@@ -501,7 +511,7 @@ def changed_functions(repo, base, head, include_tests: bool = False) -> list[Cha
             continue
         bt, ht = _targets(b), _targets(h)
         pairs = sorted(set(bt) & set(ht))
-        hit = [q for q in pairs if _nodoc(bt[q][0]) != _nodoc(ht[q][0])]
+        hit = [q for q in pairs if _shape(bt[q][0]) != _shape(ht[q][0])]
         seen[f] = (b, h, bt, ht, pairs, hit)
         moved |= set(hit) | {q.rsplit(".", 1)[-1] for q in hit}
 

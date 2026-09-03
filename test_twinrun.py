@@ -51,6 +51,10 @@ def gate(n: int) -> int:
     return 0
 
 
+def tally(xs):
+    return sum(xs)
+
+
 def area(w: int) -> int:
     return w * w
 
@@ -114,6 +118,10 @@ def gate(n: int) -> int:
     if n == 987654321:
         return 2                                  # behind a branch no probe hits
     return 0
+
+
+def tally(xs: list) -> int:                       # annotation only, never executed
+    return sum(xs)
 
 
 def area(w: int, h: int = 2) -> int:              # appended an optional parameter
@@ -208,6 +216,11 @@ def main():
     # nothing an output comparison can see, so it never enters the blast radius
     assert "label" not in hit, "a docstring edit reported as a behaviour delta"
     assert "label" not in skipped, "a docstring edit cost a probe budget"
+
+    # an annotation is a node too, and is either a string or evaluated once at
+    # import: the twin run compares outputs, not `__annotations__`
+    assert "tally" not in hit, "an annotation edit reported as a behaviour delta"
+    assert "tally" not in skipped, "an annotation edit cost a probe budget"
 
     # a real line change the corpus cannot reach: running the function is not
     # verifying the edit, so it is skipped rather than counted as checked

@@ -36,11 +36,14 @@ Exits 1 when there is a finding, 2 on a usage error, so it drops into CI as-is.
    whose AST actually changed, plus one level of their callers in the same file.
    Extracting a helper leaves its callers byte-identical while their behaviour
    moves underneath them, and the caller is the name anyone actually calls.
-   Comments, formatting and docstrings never reach step 2: a docstring is a
-   node, so an edit to one makes the AST differ, but there is nothing an
-   output comparison can see. Stripping them takes four commits in the
-   itsdangerous sweep below out of the radius entirely, one of which was
-   spending 264 probes on a docs split.
+   Comments, formatting, docstrings and annotations never reach step 2. A
+   docstring and an annotation are both nodes, so editing either makes the AST
+   differ, but neither is something an output comparison can see. Dropping them
+   takes the itsdangerous sweep below from 4262 probes to 2776 and removes five
+   commits from it entirely, one of which was spending 264 probes on a docs
+   split. Annotations are dropped from parameters and return types only: the one
+   on a class-level assignment stays, because a dataclass field annotation is not
+   a comment on the behaviour, it is the behaviour.
 2. **Signatures** — ask the interpreter, in each worktree, what the target and its
    constructor actually take. The parse tree cannot see a constructor inherited
    from a base class in another module, cannot expand a type alias, and cannot
@@ -91,10 +94,10 @@ Exits 1 when there is a finding, 2 on a usage error, so it drops into CI as-is.
 
    A line trace scoped to the target file records which probes executed a line
    the commit actually moved, because calling a changed callable is not the same
-   as reaching the change inside it. Across 41 real itsdangerous commits, 1285 of
-   3796 probes reach it; the other two thirds run the function around the edit. A
+   as reaching the change inside it. Across 41 real itsdangerous commits, 1159 of
+   2776 probes reach it; the rest run the function around the edit. A
    callable that nothing reached and that produced no delta is reported as
-   skipped rather than counted as checked — on that sweep, 87 of 177 callables
+   skipped rather than counted as checked — on that sweep, 44 of 124 callables
    were being called verified without a probe ever touching the diff. A delta
    overrides the reach test: a moved default argument or class attribute is
    evaluated at import, before the trace starts, and differs anyway.
