@@ -99,6 +99,36 @@ def result(kind, value, type_name, stdout="", mutated=""):
             "stdout": cap(stdout), "mutated": cap(mutated)}
 
 
+class Sibling(dict):
+    """The changed module's namespace, plus what its siblings can lend it.
+
+    A construction is synthesised from the constructors of every module in the
+    package, and the probe is evaluated in the namespace of one of them. click's
+    termui.py can name five of the fifty-nine classes that map holds, so a
+    parameter wanting a Command got an expression its own module had never
+    heard of and every probe for that callable died on the NameError.
+
+    The class is one import away, and the two revisions resolve the name the
+    same way, so lending it cannot invent a difference between them -- it only
+    lets the probe run. Modules are consulted in name order so a name that two
+    of them export resolves to the same one every time.
+    """
+
+    def __init__(self, mod):
+        super().__init__(vars(mod))
+        top = (getattr(mod, "__package__", "") or mod.__name__).split(".")[0]
+        self._pkg = [m for name, m in sorted(sys.modules.items())
+                     if m is not None and (name == top or name.startswith(top + "."))]
+
+    def __missing__(self, name):
+        if not name.startswith("_"):
+            for m in self._pkg:
+                if hasattr(m, name):
+                    self[name] = v = getattr(m, name)
+                    return v
+        raise KeyError(name)
+
+
 @contextlib.contextmanager
 def traced(seen):
     """Record which of the commit's lines run inside this block.
@@ -379,7 +409,7 @@ def main():
         if payload.get("mode") == "introspect":
             out.write_text(json.dumps(introspect(mod, payload)))
             return
-        env = dict(vars(mod))
+        env = Sibling(mod)
         env["__builtins__"] = builtins
         if payload.get("mode") == "freeze":
             out.write_text(json.dumps({"frozen": freeze(env, payload["exprs"])}))

@@ -10,6 +10,7 @@ import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
+from twinrun._child import Sibling
 from twinrun.core import _ctor_exprs, _typekey, _values, cluster, verify, write_verdicts
 
 BASE = '''
@@ -508,6 +509,21 @@ def main():
     built = _ctor_exprs("CompletionItem", item, hints=["'_'", "'\\n'", "':'"])
     assert "CompletionItem(':', ':', ':')" in built, \
         f"no construction holds the changed line's literal in every column: {built}"
+
+    # A construction is synthesised from every module's constructors and
+    # evaluated in the namespace of one of them: click's termui can name five
+    # of the fifty-nine classes in that map. The name is one import away, and
+    # both revisions resolve it the same way, so lending it cannot invent a
+    # difference -- it only lets the probe run.
+    env = Sibling(sys.modules["twinrun.core"])
+    assert env["Delta"].__name__ == "Delta", "a module cannot name its own"
+    assert "Sibling" not in vars(sys.modules["twinrun.core"]), "pick a name core lacks"
+    assert env["Sibling"] is Sibling, "a sibling's name went unresolved"
+    try:
+        env["no_such_name_anywhere"]
+        raise AssertionError("an absent name has to stay absent")
+    except KeyError:
+        pass
 
     # A producer is keyed by what the parse tree said; a parameter asks by what
     # the interpreter resolved. Two spellings of one type have to meet, or a
