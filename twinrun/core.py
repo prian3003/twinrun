@@ -822,7 +822,14 @@ def changed_functions(repo, base, head, include_tests: bool = False) -> list[Cha
             ch = _describe(f, qual, *ht[qual], *bt[qual], transparent=clear)
             ch.is_async = isinstance(ht[qual][0], ast.AsyncFunctionDef)
             ch.ctors, ch.producers, ch.lines = ctors, made, touched
-            ch.guards = _guards(ht[qual][0], touched["head"])
+            # Both revisions, for the same reason the hints take both: the
+            # branch standing in front of a removed line is in base, and
+            # reaching the edit on either side is coverage of it.
+            gh = _guards(ht[qual][0], touched["head"])
+            gb = _guards(bt[qual][0], touched["base"])
+            ch.guards = {k: gh.get(k, []) + [x for x in gb.get(k, [])
+                                             if x not in gh.get(k, [])]
+                         for k in set(gh) | set(gb)}
             # Both sides: a commit that removes a line leaves the literal it
             # operated on only in base, and a revert is nothing but removals.
             ch.hints = _hints(ht[qual][0], touched["head"]) + \

@@ -121,6 +121,18 @@ Exits 1 when there is a finding, 2 on a usage error, so it drops into CI as-is.
    attribute; a `<` names a direction rather than a value, and the corpus
    already carries both ends of the range.
 
+   The literals written on the changed lines go in as well, from both revisions,
+   since a commit that removes a line leaves the literal it operated on only in
+   base. A guard mines the constant a branch demands; this mines the constant
+   the changed code works on, which is the other half — click's revert dropped
+   the colon escaping from `item.value.replace(":", r"\:")`, and no corpus of
+   edge values holds a string with a colon in it, so both revisions agreed on
+   every probe that ran. Short ones first: a separator is the sort of thing a
+   value has to contain for the moved line to do anything, and a sentence quoted
+   from an error message is not. They reach a nested constructor's parameters
+   too, which is where a project type keeps its strings, and an `Any` gets them
+   as well — it says nothing about the type, so it has no claim to refuse them.
+
    `Any` says nothing on its own, but `dict[str, Any]` and `IO[Any]` say plenty:
    the type argument is not the type. Reading the whole annotation as untyped is
    how a file parameter ends up probed with `0`, raising `'int' object has no
@@ -136,9 +148,11 @@ Exits 1 when there is a finding, 2 on a usage error, so it drops into CI as-is.
    before the signature is ever checked.
 
    A parameter annotated with one of your own classes gets a real instance built
-   for it, by probing that class's `__init__` one level deep. A constructor's
-   optional parameters are left at their defaults, since inventing values for them
-   mostly fails to build anything and the default is what real calls use. Anything else that
+   for it, by probing that class's `__init__` two levels deep: a constructor that
+   itself wants a project type gets one built rather than a no-argument call.
+   One level is enough for a library of leaf types and not enough for a
+   framework — click's `Context` takes a `Command`, and at one level every probe
+   that needed a `Context` died in setup. Anything else that
    is a bare name — an imported type, something it has never heard of — is tried
    as a no-argument constructor, resolved in the target module's own namespace.
    When that cannot be built the failure is identical on both sides, so a type it
@@ -194,7 +208,17 @@ Exits 1 when there is a finding, 2 on a usage error, so it drops into CI as-is.
    of only a handful of values can still agree with itself by chance — roughly a
    one-in-six coin flip stays quiet about 17% of the time — so raise `--repeats`
    when you are verifying something like that.
-8. **Cluster** — one root cause is one finding. Thirty calls that all differ
+8. **Contract** — a delta the old code refused is not a delta. If the base
+   revision answered a probe with `TypeError` or `AttributeError`, that call was
+   never valid and nothing depended on what it did, so whatever the new revision
+   makes of it is not a regression. jinja's `pyupgrade` commit reported 19
+   findings on the strength of `TemplateSyntaxError(msg, lineno='a')`: the base
+   raised `%d format: a real number is required` and the f-string that replaced
+   it formatted the string happily. True, and useless. With the rule in place
+   that commit checks 63 callables and reports nothing. The count is printed, so
+   a run that drops a lot of probes says so.
+
+9. **Cluster** — one root cause is one finding. Thirty calls that all differ
    `int → float` are reported once, with a count.
 
 ## Install
@@ -228,15 +252,30 @@ verifies that pull request against its own base branch.
 ## What it covers
 
 Module-level functions, instance methods, `@staticmethod` and `@classmethod`.
+`@property`, called by reading it, because what it computes is behaviour like
+anything else. `async def`, awaited in the child. A function behind a marker
+decorator — one that records something and returns the function unchanged, which
+both revisions have to agree it does.
 
 `*args`, `**kwargs`, and keyword-only parameters that have defaults: none of them
 needs a value, so the callable is probed on its positional parameters.
 
-Skipped, with the reason printed: `async def`, other decorators, a keyword-only
+Skipped, with the reason printed: an async generator (no one result to compare)
+and a callable that changed between sync and async (a different way of being
+called), decorators that are not markers, a keyword-only
 parameter with no default, `__init__` (observed through the instance state its methods report), signatures that
 changed in a way that leaves no identical-input comparison, callables for which
 no usable input could be built, and callables no probe reached. Untyped parameters get a generic spread, which
 usually lands on `TypeError` identically on both sides and reports nothing.
+
+A probe never shells out or opens a socket. `subprocess`, `os.system`, `exec*`
+and `webbrowser` print the command they were handed instead of running it, which
+puts the argument list into captured stdout — where the comparison already
+looks, so a change in how a command is assembled reads as a delta. Probing
+click means probing `Editor.edit_files` and `open_url`, which would otherwise
+launch a real editor and a real browser twice per side and end in a timeout with
+nothing to show. The network is refused outright. This is a shim, not a sandbox:
+it stops what a probe stumbles into, not code that means to escape.
 
 ## Prior art
 
@@ -278,17 +317,41 @@ itself from the git range instead of being handed a pair of names.
 
 ## Limits today
 
-Probes run your code for real. There is no sandbox yet, so a function that writes
-files or hits the network will do that, twice per side. Point it at a repo whose
-test suite you would already run.
+Probes run your code for real. The shim above stops a probe shelling out or
+dialling the network, but a function that writes a file still writes it, twice
+per side, and `os.fork`, `ctypes` and a C extension all go around the shim.
+Point it at a repo whose test suite you would already run. Real isolation is a
+container, and there isn't one yet.
 
-The probe corpus is fixed, beyond what the module's own producers add. It finds
-changes that a boring edge value, a freshly produced one, or something the test
-suite wrote down reaches. It misses changes that need a state none of those
-three holds. Constructor synthesis stops
-at one level: a class whose `__init__` wants another project type falls back to a
-no-argument call. Caller propagation stops at one level too, and matches by name
-within a file rather than resolving the call graph.
+The probe corpus is fixed, beyond what the module's own producers add, what the
+test suite wrote down, and the literals on the changed line itself. It misses
+changes that need a state none of those holds.
+
+The columns of a probe advance together, so a change that needs two parameters
+to hold particular values at the same time is only found when those values
+line up at the same index. click's `ZshComplete.format_completion` escapes a
+colon in the item's value if and only if its help is not the sentinel `"_"`;
+the colon and a non-sentinel help never land in the same probe, and the commit
+that removed the escaping — reverted upstream — goes unreported.
+
+Constructor synthesis stops at two levels: a class whose `__init__` wants a
+project type gets one built, and that one's own project-typed parameters fall
+back to a no-argument call. Caller propagation stops at one level, and matches
+by name within a file rather than resolving the call graph.
+
+`regressions.py` scores the tool against regressions a real repository already
+admitted to. A commit someone later ran `git revert` on is a pair whose label
+is the maintainers' own verdict — nothing is inferred, and reverting is them
+saying the whole change was unwanted:
+
+    python3 regressions.py ~/src/itsdangerous
+    python3 regressions.py ~/src/click --since 2019 --blame
+
+`--blame` adds pairs mined from commits whose message says they fixed
+something, by blaming the lines they removed. Those labels are much weaker —
+the commit that last touched a line is usually the last refactor, not the
+cause — and on a repo whose history is mostly formatting and typing passes they
+are mostly noise. Read them as coverage, not as a hit rate.
 
 `sandbox.py` builds a repository whose answers are known — nineteen commits a
 reviewer would wave through, some of which quietly change behaviour — and scores
