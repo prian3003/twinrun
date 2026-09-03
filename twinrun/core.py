@@ -71,6 +71,7 @@ class Change:
     built: list[str] = field(default_factory=list)  # constructions taken from the tests
     lines: dict = field(default_factory=dict)   # side -> line numbers the commit touched
     guards: dict = field(default_factory=dict)  # parameter -> literals a branch demands
+    risky: set = field(default_factory=set)  # producer calls the commit changed
     skip: str | None = None
 
     @property
@@ -648,7 +649,24 @@ def changed_functions(repo, base, head, include_tests: bool = False) -> list[Cha
         callers = [q for q in pairs
                    if q not in hit and _refs(ht[q][0]) & tails][:CALLER_LIMIT]
 
-        made = _producers(b, moved, ctors, fixtures, calls=tcalls)
+        # The exclusion is off for this module's own producers: they are read
+        # from base and frozen to base's value before either side runs, so a
+        # producer the commit changed still hands both sides the same input --
+        # base's, which is the revision being trusted. What it cannot do is run
+        # unfrozen, so the ones the exclusion used to drop are tracked and
+        # pulled back out if the freeze does not take.
+        made = _producers(b, set(), ctors, fixtures, calls=tcalls)
+        safe = {e for v in _producers(b, moved, ctors, fixtures,
+                                      calls=tcalls).values() for _, e in v}
+        # Relaxed for the two types a corpus cannot write down, and nothing
+        # else. A signed token has to come from the code that signs it; an int
+        # does not, and eight edge values beat any producer of one. A project
+        # type is worse than useless relaxed -- an instance has no literal form,
+        # so it would freeze into nothing and take the whole probe out with it.
+        for ann, v in made.items():
+            if set(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", ann)) - {"str", "bytes"}:
+                made[ann] = [x for x in v if x[1] in safe]
+        risky = {e for v in made.values() for _, e in v} - safe
 
         # A construction the tests perform is a producer of its own class: a
         # parameter annotated `Signer` gets one the suite already proved valid,
@@ -685,6 +703,7 @@ def changed_functions(repo, base, head, include_tests: bool = False) -> list[Cha
             ch = _describe(f, qual, *ht[qual], *bt[qual])
             ch.ctors, ch.producers, ch.lines = ctors, made, touched
             ch.guards = _guards(ht[qual][0], touched["head"])
+            ch.risky = risky
             # A changed constructor anywhere disqualifies every harvested
             # construction: __init__ is resolved through inheritance, so the
             # one that moved is not always the one named on the class.
@@ -1089,6 +1108,52 @@ def run_side(side: str, worktree: Path, change: Change, probes, timeout: float,
     return data["results"], data.get("reached") or [], None
 
 
+def _const(text: str) -> bool:
+    """Already a value, so there is nothing to evaluate."""
+    try:
+        ast.literal_eval(text)
+    except (ValueError, SyntaxError, MemoryError, RecursionError):
+        return False
+    return True
+
+
+def freeze_probes(worktree: Path, change: Change, probes, timeout: float,
+                  tmp: Path):
+    """Probes with every producer call replaced by the value it has in base.
+
+    A producer is code, and code the commit touched gives the two sides
+    different inputs -- which is why a moved producer used to be dropped
+    outright, taking the round trip with it: the commit that changes `dumps` is
+    exactly the one that leaves `loads` with nothing but a corpus string and
+    `No b'.' found in value`. Evaluated once in base and pasted back as a
+    literal, the producer stops being code. Both sides get the same bytes, the
+    bytes are the ones the old revision issued, and handing head's `loads` a
+    token base's `dumps` signed is the contract this tool is built on.
+
+    It settles the timestamp producers on the way past. Signing a fresh token
+    per side put the clock in the comparison; one frozen token puts the same
+    string on both sides of it.
+    """
+    # Only the producer calls. A constructor expression is in the probes too and
+    # evaluates to an instance, which has no literal form, so sending it costs a
+    # subprocess to be told no. Where no producer was used there is no call at
+    # all, which is most plain functions.
+    pool = {e for v in change.producers.values() for e in v} | change.risky
+    want = {a for p in probes for a in p if a in pool and not _const(a)}
+    got = {}
+    if want:
+        data, _ = _invoke(worktree, {"mode": "freeze", "file": change.file,
+                                     "exprs": sorted(want)}, timeout, tmp)
+        got = (data or {}).get("frozen") or {}
+    out = [[got.get(a, a) for a in p] for p in probes]
+    # Whatever would not freeze and was only on offer because the exclusion was
+    # relaxed goes back out. It is the input that would have differed between
+    # the sides, which is the one thing a twin run cannot have.
+    if change.risky:
+        out = [p for p in out if not change.risky.intersection(p)]
+    return out, None if out else "every input needs a producer the commit changed"
+
+
 def signatures(worktree: Path, change: Change, timeout: float, tmp: Path):
     """Real parameter lists for the target and its constructor, from the running
     interpreter rather than the parse tree."""
@@ -1207,6 +1272,11 @@ def verify(repo, base, head, limit=24, timeout=20.0, seed=0, repeats=2,
 
                 probes, why = make_probes(ch, limit, seed)
                 if probes is None:
+                    rep.skipped.append((ch.qualname, why))
+                    continue
+
+                probes, why = freeze_probes(bw, ch, probes, timeout, td)
+                if why:
                     rep.skipped.append((ch.qualname, why))
                     continue
 

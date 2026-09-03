@@ -17,6 +17,16 @@ def discount(price: int, pct: int) -> int:
     return price - price * pct // 100
 
 
+def issue(name: str) -> str:
+    return "v1:" + name
+
+
+def read_name(t: str) -> str:
+    if not t.startswith("v1:"):
+        raise ValueError("bad token")
+    return t[3:]
+
+
 def slug(name: str) -> str:
     return name.strip().lower().replace(" ", "-")
 
@@ -98,6 +108,16 @@ class Cart:
 HEAD = '''
 def discount(price: int, pct: int) -> int:
     return price - price * pct / 100              # int -> float
+
+
+def issue(name: str) -> str:
+    return "v2:" + name                           # the producer moved too
+
+
+def read_name(t: str) -> str:
+    if not t.startswith("v1:"):
+        raise ValueError("bad token")
+    return t[3:].upper()
 
 
 def slug(name: str) -> str:
@@ -286,7 +306,16 @@ def main():
     assert "no probe reached" in skipped.get("warp", ""), \
         f"unreached edit should not count as checked, got {skipped.get('warp')!r}"
 
-    assert rep.checked == 11, f"expected 11 callables twin-run, got {rep.checked}"
+    # `issue` moved, so it used to be dropped as a producer and `read_name` was
+    # left with corpus strings that all miss its prefix. Frozen in base it is a
+    # value, not code: both sides get the token the old revision issued, which
+    # is the only way the delta inside `read_name` is visible at all.
+    assert "read_name" in hit, f"missed a change behind a moved producer; found {hit}"
+    rn = next(d for d in rep.deltas if d.qualname == "read_name")
+    assert rn.base["kind"] == rn.head["kind"] == "return", \
+        f"the two sides got different tokens: {rn.base} -> {rn.head}"
+
+    assert rep.checked == 13, f"expected 13 callables twin-run, got {rep.checked}"
 
     # `Any` inside a subscript is a type argument, not the type: a dict whose
     # values are Any is still a dict, and a file annotated IO[Any] is still a

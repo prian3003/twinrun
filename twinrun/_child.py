@@ -151,6 +151,39 @@ def call(mod, env, payload, argsrc):
     return out, bool(seen)
 
 
+FROZEN = (str, bytes, int, float, bool, type(None))
+
+
+def freeze(env, exprs):
+    """What each expression evaluates to in this revision, written as source.
+
+    Only a scalar comes back. An object has no source form that rebuilds it and
+    a container holds objects, but the value worth freezing -- a signed token, a
+    serialized payload, a formatted key -- is a str or bytes, and that is the
+    one an output comparison was going to be blocked on.
+    """
+    out = {}
+    for e in exprs:
+        try:
+            with contextlib.redirect_stdout(io.StringIO()), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                v = eval(e, env)
+        except BaseException:
+            continue
+        if type(v) not in FROZEN:
+            continue
+        # repr is a promise, not a guarantee: `inf` and `nan` do not parse back,
+        # and a str subclass reprs as something that is not it.
+        r = repr(v)
+        try:
+            back = eval(r, {"__builtins__": {}})
+        except BaseException:
+            continue
+        if type(back) is type(v) and back == v:
+            out[e] = r
+    return out
+
+
 def _ann(a):
     """Annotation as source text a probe can be built from. Type aliases and
     string annotations are resolved by inspect; typing constructs keep their full
@@ -225,6 +258,9 @@ def main():
             return
         env = dict(vars(mod))
         env["__builtins__"] = builtins
+        if payload.get("mode") == "freeze":
+            out.write_text(json.dumps({"frozen": freeze(env, payload["exprs"])}))
+            return
         TRACE["path"] = str((root / payload["file"]).resolve())
         TRACE["lines"] = set(payload.get("lines") or [])
         runs = [call(mod, env, payload, a) for a in payload["probes"]]
