@@ -36,11 +36,11 @@ Exits 1 when there is a finding, 2 on a usage error, so it drops into CI as-is.
    moves underneath them, and the caller is the name anyone actually calls.
    Comments, formatting, docstrings, annotations and parameter names never reach
    step 2. Each of them is a node, so editing one makes the AST differ, and none
-   of them is something an output comparison can see. Dropping them takes the
-   itsdangerous sweep below from 7061 probes to 5738 and removes four commits
-   from it entirely, one of which was spending 264 probes on a docs split. It
-   also cuts the "no probe reached" skips from 83 to 32: most of what could not
-   reach the change was a callable with nothing executable changed in it.
+   of them is something an output comparison can see. Dropping them removes four commits
+   from the itsdangerous sweep below entirely, one of which was spending 264
+   probes on a docs split, and cuts the "no probe reached" skips by more than
+   half: most of what could not reach the change was a callable with nothing
+   executable changed in it.
    Annotations are dropped from parameters and return types only: the one on a
    class-level assignment stays, because a dataclass field annotation is not a
    comment on the behaviour, it is the behaviour. Parameter names go into
@@ -178,11 +178,12 @@ Exits 1 when there is a finding, 2 on a usage error, so it drops into CI as-is.
 
    A line trace scoped to the target file records which probes executed a line
    the commit actually moved, because calling a changed callable is not the same
-   as reaching the change inside it. Across 41 real itsdangerous commits, 4402 of
-   5738 probes reach it; the rest run the function around the edit. A
-   callable that nothing reached and that produced no delta is reported as
-   skipped rather than counted as checked — on that sweep, 32 of 253 callables
-   were being called verified without a probe ever touching the diff. A delta
+   as reaching the change inside it. Across the 51 non-merge itsdangerous
+   commits since 2020 that touch the package — 29 of which leave anything
+   executable to run — 4001 of 5269 probes reach it; the rest run the function
+   around the edit. A callable that nothing reached and that produced no delta
+   is reported as skipped rather than counted as checked: 33 of the 60 skips on
+   that sweep, against 203 callables checked. A delta
    overrides the reach test: a moved default argument or class attribute is
    evaluated at import, before the trace starts, and differs anyway.
 6. **Normalise** — the two revisions are checked out at different paths, so
@@ -245,9 +246,32 @@ twinrun ~/work/api --base main --head my-branch
 | `--timeout` | `20` | seconds per side, per callable |
 | `--seed` | `0` | probe sampling seed |
 | `--repeats` | `2` | runs per side used to detect non-determinism |
+| `--accept` | | record the current findings as intended, in `.twinrun.json` |
+| `--note` | | a line stored alongside what `--accept` records |
 
 CI runs the self-check on 3.10/3.12/3.13, and on every pull request twinrun
 verifies that pull request against its own base branch.
+
+## Intended changes
+
+Most commits change behaviour on purpose. The old code is the oracle for what
+the behaviour *was*; only a person can say whether changing it was the point,
+and a check that reports the same intended change on every run is one people
+turn off.
+
+```
+twinrun . --base main --head HEAD --accept --note "rounding is now banker's"
+```
+
+That writes each current finding to `.twinrun.json` under a fingerprint of
+where it happened and what changed about the answer — never the arguments,
+which differ with the seed and the budget, so a finding recorded once is
+recognised again. Later runs set those aside and say how many, and the file is
+meant to be committed: it is a record of decisions, and it reviews like one.
+
+A verdict is scoped to the shape of the difference, not to a revision. If the
+same callable changes again in a new way, the fingerprint is new and the
+finding is reported.
 
 ## What it covers
 

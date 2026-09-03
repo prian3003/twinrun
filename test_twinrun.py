@@ -10,7 +10,7 @@ import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from twinrun.core import _typekey, _values, cluster, verify
+from twinrun.core import _typekey, _values, cluster, verify, write_verdicts
 
 BASE = '''
 def discount(price: int, pct: int) -> int:
@@ -345,6 +345,15 @@ def main():
         repo.mkdir()
         fixture(repo)
         rep = verify(repo, "HEAD~1", "HEAD", limit=24)
+        # Every finding ruled intended, then the same run again: a check that
+        # reports the same accepted change forever is one people turn off.
+        accepted = write_verdicts(repo, rep.deltas, "self-check")
+        again = verify(repo, "HEAD~1", "HEAD", limit=24)
+
+    assert accepted == len(cluster(rep.deltas)), \
+        f"accepted {accepted} of {len(cluster(rep.deltas))} findings"
+    assert not again.deltas, f"{len(again.deltas)} accepted findings reported again"
+    assert len(cluster(again.known)) == accepted, "accepted findings went missing"
 
     hit = {d.qualname for d in rep.deltas}
     skipped = dict(rep.skipped)

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import ast
 import copy
+import hashlib
 import itertools
 import json
 import random
@@ -124,6 +125,7 @@ class Report:
     probes: int = 0         # probes compared after the flake filter
     flaky: int = 0          # probes dropped as non-deterministic
     refused: int = 0        # probes the oracle rejected as the wrong type
+    known: list = field(default_factory=list)   # deltas a verdict already ruled on
     reached: int = 0        # of those, probes that executed a line the commit touched
 
 
@@ -1498,6 +1500,15 @@ def verify(repo, base, head, limit=24, timeout=20.0, seed=0, repeats=2,
         finally:
             git(repo, "worktree", "remove", "--force", str(bw), check=False)
             git(repo, "worktree", "remove", "--force", str(hw), check=False)
+
+    # A finding someone has already ruled intended is set aside rather than
+    # dropped: the run still knows about it, and `--accept` still sees it, but
+    # it is not reported again. Reporting the same intended change every time is
+    # how a check gets turned off.
+    accepted = read_verdicts(repo)
+    if accepted:
+        rep.known = [d for d in rep.deltas if fingerprint(d) in accepted]
+        rep.deltas = [d for d in rep.deltas if fingerprint(d) not in accepted]
     return rep
 
 
@@ -1505,16 +1516,74 @@ def verify(repo, base, head, limit=24, timeout=20.0, seed=0, repeats=2,
 # reporting
 # --------------------------------------------------------------------------
 
+def _key(d: Delta) -> tuple:
+    """The shape of a difference, without the arguments that exposed it.
+
+    Two runs pick different probes -- a different seed, a wider budget, a corpus
+    that grew -- so anything derived from the arguments makes a finding that
+    cannot be recognised twice. What stays the same is where it happened and
+    what changed about the answer.
+    """
+    return (
+        d.file, d.qualname,
+        d.base["kind"], d.head["kind"],
+        d.base["type"], d.head["type"],
+        d.base["value"] == d.head["value"],          # differs only in mutation
+    )
+
+
+def fingerprint(d: Delta) -> str:
+    """A finding's name in the verdict file. Short enough to read in a diff."""
+    return hashlib.sha256("\x00".join(map(str, _key(d))).encode()).hexdigest()[:12]
+
+
 def cluster(deltas: list[Delta]) -> list[list[Delta]]:
     """One root cause is one finding. Group by the shape of the difference, not
     the arguments that happened to expose it."""
     groups: dict[tuple, list[Delta]] = {}
     for d in deltas:
-        key = (
-            d.file, d.qualname,
-            d.base["kind"], d.head["kind"],
-            d.base["type"], d.head["type"],
-            d.base["value"] == d.head["value"],      # differs only in mutation
-        )
-        groups.setdefault(key, []).append(d)
+        groups.setdefault(_key(d), []).append(d)
     return list(groups.values())
+
+
+VERDICTS = ".twinrun.json"
+
+
+def read_verdicts(repo) -> dict:
+    """Findings a human has already ruled on, by fingerprint.
+
+    A tool that reports the same intended change on every run is one people
+    turn off. The old code is the oracle for what the behaviour *was*; only a
+    person can say whether changing it was the point. Writing that down is the
+    difference between a check that gets quieter as it is used and one that
+    does not.
+    """
+    p = Path(repo) / VERDICTS
+    try:
+        data = json.loads(p.read_text())
+    except (OSError, ValueError):
+        return {}
+    return data.get("accepted", {}) if isinstance(data, dict) else {}
+
+
+def write_verdicts(repo, deltas, note: str = "") -> int:
+    """Record every current finding as intended. Returns how many were new."""
+    p = Path(repo) / VERDICTS
+    try:
+        data = json.loads(p.read_text())
+    except (OSError, ValueError):
+        data = {}
+    accepted = data.setdefault("accepted", {}) if isinstance(data, dict) else {}
+    added = 0
+    for g in cluster(deltas):
+        d = g[0]
+        fp = fingerprint(d)
+        if fp in accepted:
+            continue
+        accepted[fp] = {"where": f"{d.file}::{d.qualname}",
+                        "was": f"{d.base['kind']} {d.base['type']}",
+                        "now": f"{d.head['kind']} {d.head['type']}",
+                        "note": note}
+        added += 1
+    p.write_text(json.dumps({"accepted": accepted}, indent=1, sort_keys=True) + "\n")
+    return added

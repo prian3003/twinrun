@@ -1,7 +1,7 @@
 import argparse
 import sys
 
-from .core import cluster, verify
+from .core import VERDICTS, cluster, verify, write_verdicts
 
 BOLD, DIM, RED, GREEN, YELLOW, OFF = (
     "\033[1m", "\033[2m", "\033[31m", "\033[32m", "\033[33m", "\033[0m",
@@ -57,6 +57,7 @@ def show(rep, base, head):
         f"{paint(findings, RED if n else GREEN)} · {checked}"
         f" · {rep.probes} probes ({rep.reached} reached the change)"
         f" · {rep.flaky} flaky dropped"
+        + (f" · {len(cluster(rep.known))} already accepted" if rep.known else "")
         + (f" · {rep.refused} the old code refused" if rep.refused else "")
     )
     for name, why in rep.skipped:
@@ -78,6 +79,10 @@ def main(argv=None):
                     help="also probe test files, which means running the suite")
     ap.add_argument("--repeats", type=int, default=2,
                     help="runs per side; raise it when a target has few possible outputs")
+    ap.add_argument("--accept", action="store_true",
+                    help=f"record every current finding in {VERDICTS} as intended, "
+                         "so later runs stop reporting it")
+    ap.add_argument("--note", default="", help="a line stored with --accept")
     a = ap.parse_args(argv)
 
     try:
@@ -86,6 +91,11 @@ def main(argv=None):
     except RuntimeError as e:
         print(f"twinrun: {e}", file=sys.stderr)
         return 2
+    if a.accept:
+        n = write_verdicts(a.repo, rep.deltas + rep.known, a.note)
+        print(f"{paint('accepted', GREEN)} {n} new "
+              f"finding{'' if n == 1 else 's'} in {VERDICTS}")
+        return 0
     show(rep, a.base, a.head)
     return 1 if rep.deltas else 0
 
