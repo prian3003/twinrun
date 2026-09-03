@@ -168,27 +168,6 @@ def _targets(src: str) -> dict[str, tuple]:
     return out
 
 
-def _class_ctors(src: str) -> dict[str, list]:
-    """Local classes and the parameters their __init__ takes, so a parameter
-    annotated with a project type can be built instead of skipped."""
-    try:
-        tree = ast.parse(src)
-    except SyntaxError:
-        return {}
-    out = {}
-    for n in tree.body:
-        if not isinstance(n, ast.ClassDef):
-            continue
-        init = _init_of(n)
-        if init is None:
-            out[n.name] = []
-        elif _bad_sig(init):
-            out[n.name] = None          # not constructible from a positional sweep
-        else:
-            out[n.name] = _sig_params(init, True)
-    return out
-
-
 def _ctor_map(srcs) -> dict[str, list]:
     """Constructor parameters for every class in a package, with an inherited
     __init__ resolved to the base class that defines it. TimestampSigner takes
