@@ -10,7 +10,7 @@ import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from twinrun.core import cluster, verify
+from twinrun.core import _values, cluster, verify
 
 BASE = '''
 def discount(price: int, pct: int) -> int:
@@ -245,6 +245,13 @@ def main():
         f"unreached edit should not count as checked, got {skipped.get('warp')!r}"
 
     assert rep.checked == 10, f"expected 10 callables twin-run, got {rep.checked}"
+
+    # `Any` inside a subscript is a type argument, not the type: a dict whose
+    # values are Any is still a dict, and a file annotated IO[Any] is still a
+    # file. Reading it as untyped probes both of them with `0`.
+    assert _values("dict[str, t.Any]")[0] == "{}", "a type argument discarded the container"
+    assert "BytesIO" in _values("t.IO[t.Any]")[0], "a file parameter is not modelled"
+    assert _values("t.Any") == _values(""), "a bare Any should still get the spread"
 
     # Reaching the change is the whole chain -- hunk parse, payload, line trace,
     # tally -- and any broken link in it reports zero.

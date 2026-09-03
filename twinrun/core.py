@@ -36,6 +36,11 @@ CORPUS = {
     "tuple": ["()", "(1,)", "(1, 2)"],
     "set": ["set()", "{1}", "{1, 2}"],
     "none": ["None"],
+    # A file parameter is annotated IO, TextIO or BinaryIO and is never a name
+    # the target module imported, so it is built from `io` directly.
+    "io": ["__import__('io').BytesIO(b'')", "__import__('io').BytesIO(b'a.b')"],
+    "binaryio": ["__import__('io').BytesIO(b'')", "__import__('io').BytesIO(b'a.b')"],
+    "textio": ["__import__('io').StringIO('')", "__import__('io').StringIO('a.b')"],
     "any": ["0", "1", "-1", "''", "'a'", "[]", "None", "True"],
     "object": ["0", "'a'", "None"],
 }
@@ -889,7 +894,16 @@ def _values(ann: str, ctors: dict | None = None,
     names = re.findall(r"[A-Za-z_][A-Za-z0-9_]*", QUALIFIER.sub("", ann))
     optional = "None" in names or "Optional" in names
     if "Any" in names:
-        return UNTYPED              # a type that says nothing gets the spread
+        # `Any` says nothing on its own. But `dict[str, Any]` and `IO[Any]` say
+        # plenty: the type argument is not the type, and taking the whole thing
+        # for untyped throws away the container -- which is how a file parameter
+        # ends up being probed with `0` and raising on the first line every time.
+        # Drop it only when something modelled is left underneath.
+        rest = [n for n in names if n != "Any"]
+        if rest and any(n.lower() in CORPUS or (ctors and n in ctors) for n in rest):
+            names = rest
+        else:
+            return UNTYPED          # a type that says nothing gets the spread
     made = _made(ann, names, producers)
     for n in names:
         if n.lower() in CORPUS:
