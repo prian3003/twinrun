@@ -155,7 +155,10 @@ def score(repo, p, limit, timeout):
         rep = verify(repo, p["intro"] + "^", p["intro"], limit=limit, timeout=timeout)
     except Exception as e:
         return {"status": "error", "note": f"{type(e).__name__}: {e}"}
-    got = {d.qualname.split(".")[-1] for d in rep.deltas}
+    # A verdict file in the repo hides findings from `rep.deltas`, and scoring
+    # is not the place to honour one: the question here is what the tool sees,
+    # not what someone has already signed off.
+    got = {d.qualname.split(".")[-1] for d in rep.deltas + rep.known}
     reasons = " ".join(w for _, w in rep.skipped)
     # A revert undid the whole commit, so any delta on it is the change that
     # was unwanted. A blame pair points at named callables and has to hit one.
