@@ -11,6 +11,7 @@ tool like this muted, so the filter is not optional.
 from __future__ import annotations
 
 import ast
+import copy
 import itertools
 import json
 import random
@@ -458,6 +459,25 @@ def _hunks(repo, base, head, f: str) -> dict[str, list[int]]:
     return out
 
 
+DOC_HOLDERS = (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+
+
+def _nodoc(node) -> str:
+    """`ast.dump` with the docstrings taken out.
+
+    A docstring is a node, so editing one makes the AST differ and puts the
+    callable in the blast radius, where it spends a full probe budget proving
+    that nothing an output comparison can see has moved. Nothing has: a
+    docstring is not an executed line, and the twin run compares return values,
+    exceptions, stdout and mutation, not `__doc__`.
+    """
+    node = copy.deepcopy(node)
+    for n in ast.walk(node):
+        if isinstance(n, DOC_HOLDERS) and ast.get_docstring(n) is not None:
+            n.body = n.body[1:] or [ast.Pass()]
+    return ast.dump(node)
+
+
 def changed_functions(repo, base, head, include_tests: bool = False) -> list[Change]:
     """Callables present in both revisions whose AST differs.
 
@@ -481,7 +501,7 @@ def changed_functions(repo, base, head, include_tests: bool = False) -> list[Cha
             continue
         bt, ht = _targets(b), _targets(h)
         pairs = sorted(set(bt) & set(ht))
-        hit = [q for q in pairs if ast.dump(bt[q][0]) != ast.dump(ht[q][0])]
+        hit = [q for q in pairs if _nodoc(bt[q][0]) != _nodoc(ht[q][0])]
         seen[f] = (b, h, bt, ht, pairs, hit)
         moved |= set(hit) | {q.rsplit(".", 1)[-1] for q in hit}
 

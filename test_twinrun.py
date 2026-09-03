@@ -45,6 +45,12 @@ def label(n: int) -> str:
     return "n=%d" % n
 
 
+def gate(n: int) -> int:
+    if n == 987654321:
+        return 1
+    return 0
+
+
 def area(w: int) -> int:
     return w * w
 
@@ -102,6 +108,12 @@ def where() -> str:
 def label(n: int) -> str:
     """The name to print for a count."""          # docstring only, never executed
     return "n=%d" % n
+
+
+def gate(n: int) -> int:
+    if n == 987654321:
+        return 2                                  # behind a branch no probe hits
+    return 0
 
 
 def area(w: int, h: int = 2) -> int:              # appended an optional parameter
@@ -192,11 +204,16 @@ def main():
     assert rep.flaky > 0, "flake filter never fired on a random() function"
     assert "Cart.__init__" in skipped, "constructor should be skipped with a reason"
 
-    # a docstring is in the AST, so the callable is in the blast radius, but it is
-    # not a line anyone executes: running the function is not verifying the edit
+    # a docstring is a node, so an edit to one makes the AST differ -- but there is
+    # nothing an output comparison can see, so it never enters the blast radius
     assert "label" not in hit, "a docstring edit reported as a behaviour delta"
-    assert "no probe reached" in skipped.get("label", ""), \
-        f"docstring-only edit should not count as checked, got {skipped.get('label')!r}"
+    assert "label" not in skipped, "a docstring edit cost a probe budget"
+
+    # a real line change the corpus cannot reach: running the function is not
+    # verifying the edit, so it is skipped rather than counted as checked
+    assert "gate" not in hit, "an unreachable branch reported as a behaviour delta"
+    assert "no probe reached" in skipped.get("gate", ""), \
+        f"unreached edit should not count as checked, got {skipped.get('gate')!r}"
 
     assert rep.checked == 9, f"expected 9 callables twin-run, got {rep.checked}"
 

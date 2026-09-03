@@ -36,7 +36,11 @@ Exits 1 when there is a finding, 2 on a usage error, so it drops into CI as-is.
    whose AST actually changed, plus one level of their callers in the same file.
    Extracting a helper leaves its callers byte-identical while their behaviour
    moves underneath them, and the caller is the name anyone actually calls.
-   Comment and formatting changes never reach step 2.
+   Comments, formatting and docstrings never reach step 2: a docstring is a
+   node, so an edit to one makes the AST differ, but there is nothing an
+   output comparison can see. Stripping them takes four commits in the
+   itsdangerous sweep below out of the radius entirely, one of which was
+   spending 264 probes on a docs split.
 2. **Signatures** — ask the interpreter, in each worktree, what the target and its
    constructor actually take. The parse tree cannot see a constructor inherited
    from a base class in another module, cannot expand a type alias, and cannot
@@ -87,10 +91,10 @@ Exits 1 when there is a finding, 2 on a usage error, so it drops into CI as-is.
 
    A line trace scoped to the target file records which probes executed a line
    the commit actually moved, because calling a changed callable is not the same
-   as reaching the change inside it. Across 41 real itsdangerous commits, 1271 of
-   4262 probes reach it; the other 70% run the function around the edit. A
+   as reaching the change inside it. Across 41 real itsdangerous commits, 1285 of
+   3796 probes reach it; the other two thirds run the function around the edit. A
    callable that nothing reached and that produced no delta is reported as
-   skipped rather than counted as checked — on that sweep, 108 of 198 callables
+   skipped rather than counted as checked — on that sweep, 87 of 177 callables
    were being called verified without a probe ever touching the diff. A delta
    overrides the reach test: a moved default argument or class attribute is
    evaluated at import, before the trace starts, and differs anyway.
