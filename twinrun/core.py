@@ -72,6 +72,7 @@ class Change:
     lines: dict = field(default_factory=dict)   # side -> line numbers the commit touched
     guards: dict = field(default_factory=dict)  # parameter -> literals a branch demands
     risky: set = field(default_factory=set)  # producer calls the commit changed
+    unknown: list = field(default_factory=list)  # producer calls with no declared type
     skip: str | None = None
 
     @property
@@ -655,7 +656,8 @@ def changed_functions(repo, base, head, include_tests: bool = False) -> list[Cha
         # base's, which is the revision being trusted. What it cannot do is run
         # unfrozen, so the ones the exclusion used to drop are tracked and
         # pulled back out if the freeze does not take.
-        made = _producers(b, set(), ctors, fixtures, calls=tcalls)
+        seek = []
+        made = _producers(b, set(), ctors, fixtures, calls=tcalls, unknown=seek)
         safe = {e for v in _producers(b, moved, ctors, fixtures,
                                       calls=tcalls).values() for _, e in v}
         # Relaxed for the two types a corpus cannot write down, and nothing
@@ -704,6 +706,7 @@ def changed_functions(repo, base, head, include_tests: bool = False) -> list[Cha
             ch.ctors, ch.producers, ch.lines = ctors, made, touched
             ch.guards = _guards(ht[qual][0], touched["head"])
             ch.risky = risky
+            ch.unknown = seek
             # A changed constructor anywhere disqualifies every harvested
             # construction: __init__ is resolved through inheritance, so the
             # one that moved is not always the one named on the class.
@@ -881,7 +884,8 @@ def _args_from(params, drop_first: bool, fixtures: dict | None = None,
 
 def _producers(src: str, exclude: set[str], ctors: dict | None = None,
                fixtures: dict | None = None, per_type: int = 4,
-               calls: dict | None = None) -> dict[str, list[str]]:
+               calls: dict | None = None,
+               unknown: list | None = None) -> dict[str, list[str]]:
     """Module functions that make a value of some type, as call expressions.
 
     A corpus of edge values cannot build a signed token, a parsed config or an
@@ -900,13 +904,19 @@ def _producers(src: str, exclude: set[str], ctors: dict | None = None,
     al = _aliases(tree)
     for n in tree.body:
         if isinstance(n, ast.FunctionDef):
-            if n.returns is None or n.name in exclude:
+            if n.name in exclude or (n.returns is None and unknown is None):
                 continue
             if _bad_sig(n) or _refs(n) & exclude:
                 continue
             for args in _args_from(_sig_params(n, False), False, fixtures, al):
-                _produced(out, _expand(ast.unparse(n.returns), al), n.name,
-                          "%s(%s)" % (n.name, ", ".join(args)), per_type)
+                expr = "%s(%s)" % (n.name, ", ".join(args))
+                # Nothing in the source says what an unannotated function makes.
+                # Park it: one call in base names the type and the value at once.
+                if n.returns is None:
+                    unknown.append((n.name, expr))
+                else:
+                    _produced(out, _expand(ast.unparse(n.returns), al), n.name,
+                              expr, per_type)
 
         # Most real code puts the producer on the same class as the consumer:
         # loads takes what dumps made. Reaching those needs an instance, which
@@ -918,7 +928,9 @@ def _producers(src: str, exclude: set[str], ctors: dict | None = None,
             # empty string outright and take the value next to it.
             insts = _ctor_exprs(n.name, ctors, limit=2, aliases=al, calls=calls)
             for m in n.body:
-                if not isinstance(m, ast.FunctionDef) or m.returns is None:
+                if not isinstance(m, ast.FunctionDef):
+                    continue
+                if m.returns is None and unknown is None:
                     continue
                 if m.decorator_list or m.name.startswith("__"):
                     continue
@@ -928,10 +940,13 @@ def _producers(src: str, exclude: set[str], ctors: dict | None = None,
                     continue
                 for args in _args_from(_sig_params(m, False), True, fixtures, al):
                     for inst in insts:
-                        _produced(out, _expand(ast.unparse(m.returns), al),
-                                  "%s.%s" % (n.name, m.name),
-                                  "%s.%s(%s)" % (inst, m.name, ", ".join(args)),
-                                  per_type)
+                        ident = "%s.%s" % (n.name, m.name)
+                        expr = "%s.%s(%s)" % (inst, m.name, ", ".join(args))
+                        if m.returns is None:
+                            unknown.append((ident, expr))
+                        else:
+                            _produced(out, _expand(ast.unparse(m.returns), al),
+                                      ident, expr, per_type)
     return out
 
 
@@ -1117,41 +1132,46 @@ def _const(text: str) -> bool:
     return True
 
 
-def freeze_probes(worktree: Path, change: Change, probes, timeout: float,
-                  tmp: Path):
-    """Probes with every producer call replaced by the value it has in base.
+def resolve_producers(worktree: Path, change: Change, timeout: float, tmp: Path):
+    """Call every producer once in base and keep what it made.
 
-    A producer is code, and code the commit touched gives the two sides
-    different inputs -- which is why a moved producer used to be dropped
-    outright, taking the round trip with it: the commit that changes `dumps` is
-    exactly the one that leaves `loads` with nothing but a corpus string and
-    `No b'.' found in value`. Evaluated once in base and pasted back as a
-    literal, the producer stops being code. Both sides get the same bytes, the
-    bytes are the ones the old revision issued, and handing head's `loads` a
-    token base's `dumps` signed is the contract this tool is built on.
+    Two answers come out of the one run. A value that freezes to a literal can
+    be handed to both sides as it stands, which is what lets the commit have
+    touched the producer at all: what reaches head is base's answer, not head's
+    code. And a producer with no return annotation gets a type -- it is whatever
+    calling it gave back, which is written nowhere in a codebase from before
+    anyone typed it.
 
-    It settles the timestamp producers on the way past. Signing a fresh token
-    per side put the clock in the comparison; one frozen token puts the same
-    string on both sides of it.
+    Whatever will not freeze keeps its call expression, and that is only allowed
+    for a producer the commit left alone. The rest goes: it is exactly the input
+    that would have differed between the two sides.
     """
-    # Only the producer calls. A constructor expression is in the probes too and
-    # evaluates to an instance, which has no literal form, so sending it costs a
-    # subprocess to be told no. Where no producer was used there is no call at
-    # all, which is most plain functions.
-    pool = {e for v in change.producers.values() for e in v} | change.risky
-    want = {a for p in probes for a in p if a in pool and not _const(a)}
-    got = {}
-    if want:
-        data, _ = _invoke(worktree, {"mode": "freeze", "file": change.file,
-                                     "exprs": sorted(want)}, timeout, tmp)
-        got = (data or {}).get("frozen") or {}
-    out = [[got.get(a, a) for a in p] for p in probes]
-    # Whatever would not freeze and was only on offer because the exclusion was
-    # relaxed goes back out. It is the input that would have differed between
-    # the sides, which is the one thing a twin run cannot have.
-    if change.risky:
-        out = [p for p in out if not change.risky.intersection(p)]
-    return out, None if out else "every input needs a producer the commit changed"
+    pool = {e for v in change.producers.values() for e in v if not _const(e)}
+    pool |= {e for _, e in change.unknown}
+    if not pool:
+        return
+    data, _ = _invoke(worktree, {"mode": "freeze", "file": change.file,
+                                 "exprs": sorted(pool)}, timeout, tmp)
+    got = (data or {}).get("frozen") or {}
+    out = {}
+    for ann, exprs in change.producers.items():
+        out[ann] = [got[e][0] if e in got else e
+                    for e in exprs if e in got or e not in change.risky]
+    # The unannotated ones file themselves under the type they turned out to
+    # make, behind everything the annotations already offered: a declared type
+    # is a claim about every call, and one observed value is a claim about one.
+    kept = {}
+    for ident, e in change.unknown:
+        if e not in got:
+            continue
+        lit, tname = got[e]
+        col = out.setdefault(tname, [])
+        if lit in col or kept.get(ident, 0) >= 2 or kept.get(tname, 0) >= CALL_LIMIT:
+            continue
+        kept[ident] = kept.get(ident, 0) + 1
+        kept[tname] = kept.get(tname, 0) + 1
+        col.append(lit)
+    change.producers = out
 
 
 def signatures(worktree: Path, change: Change, timeout: float, tmp: Path):
@@ -1270,13 +1290,9 @@ def verify(repo, base, head, limit=24, timeout=20.0, seed=0, repeats=2,
                     continue
                 ch.params, ch.ctor_params = params, ctor
 
+                resolve_producers(bw, ch, timeout, td)
                 probes, why = make_probes(ch, limit, seed)
                 if probes is None:
-                    rep.skipped.append((ch.qualname, why))
-                    continue
-
-                probes, why = freeze_probes(bw, ch, probes, timeout, td)
-                if why:
                     rep.skipped.append((ch.qualname, why))
                     continue
 

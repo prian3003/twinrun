@@ -27,6 +27,16 @@ def read_name(t: str) -> str:
     return t[3:]
 
 
+def mint():
+    return b"id-77"
+
+
+def owner(t: bytes) -> str:
+    if not t.startswith(b"id-"):
+        raise ValueError("bad id")
+    return t[3:].decode()
+
+
 def slug(name: str) -> str:
     return name.strip().lower().replace(" ", "-")
 
@@ -118,6 +128,16 @@ def read_name(t: str) -> str:
     if not t.startswith("v1:"):
         raise ValueError("bad token")
     return t[3:].upper()
+
+
+def mint():                                       # never annotated, never moved
+    return b"id-77"
+
+
+def owner(t: bytes) -> str:
+    if not t.startswith(b"id-"):
+        raise ValueError("bad id")
+    return t[3:].decode().zfill(4)
 
 
 def slug(name: str) -> str:
@@ -315,7 +335,12 @@ def main():
     assert rn.base["kind"] == rn.head["kind"] == "return", \
         f"the two sides got different tokens: {rn.base} -> {rn.head}"
 
-    assert rep.checked == 13, f"expected 13 callables twin-run, got {rep.checked}"
+    # `mint` declares no return type, so the source says nothing about what it
+    # makes and it was skipped as a producer. Calling it once in base says
+    # `bytes`, which is the only way `owner` gets past its own prefix check.
+    assert "owner" in hit, f"missed a change behind an unannotated producer; found {hit}"
+
+    assert rep.checked == 14, f"expected 14 callables twin-run, got {rep.checked}"
 
     # `Any` inside a subscript is a type argument, not the type: a dict whose
     # values are Any is still a dict, and a file annotated IO[Any] is still a

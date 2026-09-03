@@ -155,7 +155,12 @@ FROZEN = (str, bytes, int, float, bool, type(None))
 
 
 def freeze(env, exprs):
-    """What each expression evaluates to in this revision, written as source.
+    """What each expression evaluates to in this revision, as source and a type.
+
+    The type is the other half of the answer. A producer written before anyone
+    typed the codebase declares no return annotation, and there is nothing in
+    the source that says what it makes -- calling it is the only way to find
+    out, and calling it is what this does.
 
     Only a scalar comes back. An object has no source form that rebuilds it and
     a container holds objects, but the value worth freezing -- a signed token, a
@@ -180,7 +185,7 @@ def freeze(env, exprs):
         except BaseException:
             continue
         if type(back) is type(v) and back == v:
-            out[e] = r
+            out[e] = [r, type(v).__name__]
     return out
 
 
