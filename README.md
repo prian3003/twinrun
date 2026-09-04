@@ -306,6 +306,11 @@ which both revisions have to agree it does.
 `*args`, `**kwargs`, and keyword-only parameters that have defaults: none of them
 needs a value, so the callable is probed on its positional parameters.
 
+A renamed parameter is the same parameter. A probe passes values by position, so
+the rename is the same call written differently — either the name stayed or the
+annotation still means what it meant, position by position. Reading it as a
+signature change cost 38 of click's 139 skips of that kind.
+
 A generator function is drained to a bounded prefix rather than called and left
 alone. Calling one runs no line of its body, so the comparison was two
 `<generator object>` reprs -- identical on every commit once the address is
@@ -367,14 +372,18 @@ runs it against itsdangerous on every push, so a change here that stops the
 tool catching `f513b48d` fails the build.
 
 What a framework costs is worth stating plainly. Across the 509 click commits
-since 2019 that touch `src/click`, the tool checks 1455 callables and lands
-17862 of 43218 probes on a changed line. It skips 339 callables because it
-could not build an input at all, and 289 because every probe ran without
-reaching the change. click's world is `Context`, `Command`, `Option` and
+since 2019 that touch `src/click`, the tool checks 1476 callables and lands
+18221 of 43775 probes on a changed line. It skips 350 callables because it
+could not build an input at all, and 294 because every probe ran without
+reaching the change. Two thirds of that first number is one class: a commit
+that touches `Option.__init__` takes the test suite's own constructions away
+from every method on it, and what is left to build one with is the synthesised
+call that `Option` refuses. click's world is `Context`, `Command`, `Option` and
 `Parameter`, each wanting another of its own kind, and two levels of
 constructor synthesis is not the whole of it — a third was measured and moved
 that first number by nothing. The same sweep over itsdangerous — a library of
-leaf types — skips 4 and 15.
+leaf types — skips 4 and 15. The remaining decorated skips are click's own
+example CLIs, where `@click.command` has turned the function into a `Command`.
 
 ## Prior art
 
