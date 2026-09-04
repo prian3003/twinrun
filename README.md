@@ -111,6 +111,17 @@ Exits 1 when there is a finding, 2 on a usage error, so it drops into CI as-is.
    ignoring the `None` of an optional, which is a second value the parameter
    accepts and not an answer to what it is.
 
+   A container whose element type the corpus does model is filled from that
+   type, the test suite's own literals first: `Sequence[str]` out of the list
+   corpus is `['a', 'b']`, which click's `Option` refuses before its own body
+   starts, and `['--normal-flag1']` builds. `Iterable[Any]` says no more than
+   `Iterable` does and keeps the container's corpus, as does `Iterable[V]`.
+
+   An annotation nothing models still says whether `None` is allowed, and that
+   is not a guess. click's `type: ParamType | Any | None` took the untyped
+   spread and raised on `__name__` every probe, while `None` is what every real
+   call passes.
+
    A construction harvested from the tests replaces that sweep when there is one:
    a constructor with six parameters spends six probe columns getting itself
    built, and one the test suite already wrote spends one and is known to work.
@@ -197,7 +208,7 @@ Exits 1 when there is a finding, 2 on a usage error, so it drops into CI as-is.
    had every method on the class reporting coverage of an edit its own body
    never ran. Across the 51 non-merge itsdangerous commits since
    2019 that touch the package — 29 of which leave anything executable to run —
-   3751 of 5261 probes reach it; the rest run the function around the edit. A
+   3759 of 5261 probes reach it; the rest run the function around the edit. A
    callable that nothing reached and that produced no delta is reported as
    skipped rather than counted as checked: 15 of the 42 skips on that sweep,
    against 199 callables checked. A delta overrides the reach test: a moved
@@ -310,12 +321,19 @@ or one in the module that records something and returns the function unchanged,
 which both revisions have to agree it does.
 
 `*args`, `**kwargs`, and keyword-only parameters that have defaults: none of them
-needs a value, so the callable is probed on its positional parameters.
+needs a value, so the callable is probed on its positional parameters. A `*args`
+against a named list is still the same callable, though: `__exit__(self, *_)` and
+`__exit__(self, exc_type, exc_value, tb)` are one signature written twice, and a
+positional call of three values reaches both. Reconciling takes the list from
+whichever side names its parameters and calls the other side with it — click's
+context managers were skipped over nothing but the spelling, ten of them, while
+the one commit whose thirteen are real arity changes still reports all thirteen.
 
 A renamed parameter is the same parameter. A probe passes values by position, so
 the rename is the same call written differently — either the name stayed or the
 annotation still means what it meant, position by position. Reading it as a
-signature change cost 38 of click's 139 skips of that kind.
+signature change cost 38 of click's 139 skips of that kind; the variadic pass
+below took ten more, and 91 are left across the sweep.
 
 A generator function is drained to a bounded prefix rather than called and left
 alone. Calling one runs no line of its body, so the comparison was two
@@ -378,10 +396,10 @@ runs it against itsdangerous on every push, so a change here that stops the
 tool catching `f513b48d` fails the build.
 
 What a framework costs is worth stating plainly. Across the 509 click commits
-since 2019 that touch `src/click`, the tool checks 1476 callables and lands
-18221 of 43775 probes on a changed line. It skips 350 callables because it
-could not build an input at all, and 294 because every probe ran without
-reaching the change. Two thirds of that first number is one class: a commit
+since 2019 that touch `src/click`, the tool checks 1486 callables and lands
+18292 of 44610 probes on a changed line. It skips 352 callables because it
+could not build an input at all, and 302 because every probe ran without
+reaching the change. 194 of that first number is one class: a commit
 that touches `Option.__init__` takes the test suite's own constructions away
 from every method on it, and what is left to build one with is the synthesised
 call that `Option` refuses. click's world is `Context`, `Command`, `Option` and
