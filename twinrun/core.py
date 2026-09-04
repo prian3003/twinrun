@@ -221,6 +221,32 @@ def _ctor_map(srcs, owners: dict | None = None) -> dict[str, list]:
     return {k: v for k, v in out.items() if v is not None}
 
 
+def _subclasses(srcs) -> dict[str, list[str]]:
+    """Class -> the classes in this package that inherit from it, nearest first.
+
+    An abstract base cannot be built: `ShellComplete.complete` raises
+    NotImplementedError while the instance is still being assembled, and every
+    method on it was reported as one no usable input could be built for.
+    Probing it means building a `BashComplete`. A subclass that does not
+    override the changed method runs it unchanged; one that does will not reach
+    the moved lines, and the sweep says so rather than inventing coverage.
+    """
+    kids: dict[str, list[str]] = {}
+    for src in srcs:
+        try:
+            tree = ast.parse(src)
+        except SyntaxError:
+            continue
+        for n in tree.body:
+            if not isinstance(n, ast.ClassDef):
+                continue
+            for b in n.bases:
+                base = ast.unparse(b).split(".")[-1]
+                if n.name not in kids.setdefault(base, []):
+                    kids[base].append(n.name)
+    return kids
+
+
 def _decorators(node) -> set[str]:
     return {ast.unparse(d).split("(")[0].split(".")[-1] for d in node.decorator_list}
 
@@ -763,7 +789,9 @@ def changed_functions(repo, base, head, include_tests: bool = False) -> list[Cha
         # base and absent from `moved` is identical in both.
         sibs = _siblings(repo, base, f, tree_cache)
         owners: dict[str, str] = {}
-        ctors = _ctor_map([b] + [x for x in sibs if x != b], owners)
+        pkg = [b] + [x for x in sibs if x != b]
+        ctors = _ctor_map(pkg, owners)
+        subs = _subclasses(pkg)
 
         # Extracting a helper leaves its callers byte-identical while their
         # behaviour moves underneath them. Probe one level of those too: the
@@ -871,6 +899,15 @@ def changed_functions(repo, base, head, include_tests: bool = False) -> list[Cha
             cls = qual.split(".")[0] if "." in qual else ""
             if cls and f"{owners.get(cls, cls)}.__init__" not in moved:
                 ch.built = list(tcalls.get(cls, []))
+            if cls and not ch.built:
+                # Nothing builds an abstract base. Take a construction of one of
+                # its subclasses: the method under test is the one it inherits,
+                # unless the subclass overrides it, and then no moved line is
+                # reached and the sweep reports that instead.
+                for sub in subs.get(cls, []):
+                    if f"{owners.get(sub, sub)}.__init__" not in moved:
+                        ch.built += [e for e in tcalls.get(sub, [])
+                                     if e not in ch.built]
             out.append(ch)
     return out
 
