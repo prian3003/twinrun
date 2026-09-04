@@ -122,6 +122,7 @@ class Change:
     skip: str | None = None
     is_async: bool = False          # awaited in the child rather than called
     caller: bool = False            # pulled in for a change it does not contain
+    ctor_changed: bool = False      # the receiver's own __init__ is in the radius
     is_cm: bool = False             # entered in the child rather than compared
 
     @property
@@ -931,6 +932,8 @@ def changed_functions(repo, base, head, include_tests: bool = False) -> list[Cha
             cls = qual.split(".")[0] if "." in qual else ""
             if cls and f"{owners.get(cls, cls)}.__init__" not in moved:
                 ch.built = list(tcalls.get(cls, []))
+            elif cls:
+                ch.ctor_changed = True
             if cls and not ch.built:
                 # Nothing builds an abstract base. Take a construction of one of
                 # its subclasses: the method under test is the one it inherits,
@@ -1621,6 +1624,13 @@ def verify(repo, base, head, limit=24, timeout=20.0, seed=0, repeats=2,
                             res, err = _sweep(ch, retry, bw, hw, repeats,
                                               timeout, td)
                 if res is None:
+                    if ch.ctor_changed and "no usable inputs" in err:
+                        # The synthesised construction failed, and the reason the
+                        # test suite's own constructions were not there to fall
+                        # back on is the commit itself. Two thirds of click's
+                        # skips of this kind are one class whose __init__ moved.
+                        err += (f": {ch.qualname.split('.')[0]}.__init__ changed, so "
+                                "its own tests' constructions were set aside")
                     rep.skipped.append((ch.qualname, err))
                     continue
 
