@@ -305,7 +305,7 @@ twinrun ~/work/api --base main --head my-branch
 | `--timeout` | `20` | seconds per side, per callable |
 | `--seed` | `0` | probe sampling seed |
 | `--repeats` | `2` | runs per side used to detect non-determinism |
-| `--accept` | | record the current findings as intended, in `.twinrun.json` |
+| `--accept` | | record the current findings as intended, in `.twinrun.json`, and keep the calls as invariants |
 | `--note` | | a line stored alongside what `--accept` records |
 
 CI runs the self-check on 3.10/3.12/3.13, and on every pull request twinrun
@@ -347,6 +347,39 @@ meant to be committed: it is a record of decisions, and it reviews like one.
 A verdict is scoped to the shape of the difference, not to a revision. If the
 same callable changes again in a new way, the fingerprint is new and the
 finding is reported.
+
+### What a verdict is worth after the commit it was given on
+
+Saying a difference is intended does two things, and the second one outlives
+the first. It says stop reporting this, and it says what the behaviour is now
+supposed to be. So accepting a finding also writes down the calls that exposed
+it and the answers they gave, and every later run replays them against head
+before it reports anything.
+
+That is the half the blast radius cannot do. The radius is what makes this
+cheap -- probe what the commit touched and one level of callers in the same
+file, never the whole suite -- and it is also the hole: a callable the next
+commit does not touch is a callable the next run never probes. A stored answer
+does not care what the diff touched. In the self-check a commit changes
+`scale` in one file, `total` in another file is not in the radius and is not
+probed, and the stored answer is the only thing left that knows `total(1)` was
+agreed at 4:
+
+```
+  BROKE  api.py :: total   +3 more calls
+         total(1)
+         agreed  return       int        4
+         now     return       int        5
+```
+
+There is no base side because there is nothing to compare against: the stored
+answer is the oracle, which is the whole point of having kept it. Every call in
+the finding is kept, not just the one the report printed -- `total(0)` came
+through the same regression unharmed, because zero is a fixed point of
+doubling and of tripling, and one example is a thin thing to hold code to. A
+call that disagrees with itself is dropped the way any other flaky probe is,
+and a callable that has been renamed or deleted is not a regression, so it is
+passed over rather than reported.
 
 ## What it covers
 

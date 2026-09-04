@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from twinrun._child import GEN_CAP, Sibling, cap
 from twinrun._child import call as child_call
 from twinrun.core import (_ctor_exprs, _ctor_map, _own, _targets, _typekey, _values,
-                          cluster, verify, write_verdicts)
+                          cluster, read_invariants, verify, write_verdicts)
 
 BASE = '''
 from abc import abstractmethod
@@ -783,5 +783,67 @@ class Box:
         print(f"    {d.qualname:<14} {d.base['type']:>8} -> {d.head['type']:<8} ({len(g)} calls)")
 
 
+def stored_invariant_gate():
+    """A verdict outlives the commit it was given on.
+
+    The blast radius is what makes twinrun cheap, and it is also the hole: a
+    callable the commit does not touch is a callable the run never probes. Here
+    `total` lives in a file the third commit never opens, so the diff has no
+    reason to look at it and does not. The stored answer is the only thing that
+    still knows what it was supposed to return.
+    """
+    with tempfile.TemporaryDirectory() as td:
+        repo = Path(td) / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", "-b", "main", str(repo)],
+                       check=True, capture_output=True)
+        git(repo, "config", "user.email", "dev@example.com")
+        git(repo, "config", "user.name", "dev")
+
+        (repo / "util.py").write_text("def scale(x: int) -> int:\n    return x * 2\n")
+        (repo / "api.py").write_text(
+            "from util import scale\n\n\ndef total(n: int) -> int:\n"
+            "    return scale(n) + 1\n")
+        git(repo, "add", "-A")
+        git(repo, "commit", "-qm", "add util and api")
+
+        # A change to `total` itself, so there is a finding to rule on.
+        (repo / "api.py").write_text(
+            "from util import scale\n\n\ndef total(n: int) -> int:\n"
+            "    return scale(n) + 2\n")
+        git(repo, "add", "-A")
+        git(repo, "commit", "-qm", "total adds two")
+
+        first = verify(repo, "HEAD~1", "HEAD", limit=8)
+        assert any(d.qualname == "total" for d in first.deltas), \
+            "the change to total was not reported, so there is nothing to rule on"
+        write_verdicts(repo, first.deltas, "intended")
+        invs = read_invariants(repo)
+        assert any(v["qualname"] == "total" for v in invs.values()), \
+            f"accepting a finding stored no invariant for it: {invs}"
+
+        # Now break `total` from a file the commit does touch. `total` is not in
+        # the radius: it is in another file, and callers are only followed one
+        # level inside the file that changed.
+        (repo / "util.py").write_text("def scale(x: int) -> int:\n    return x * 3\n")
+        git(repo, "add", "-A")
+        git(repo, "commit", "-qm", "scale by three")
+
+        second = verify(repo, "HEAD~1", "HEAD", limit=8)
+
+    from_diff = {d.qualname for d in second.deltas if d.source == "diff"}
+    from_store = {d.qualname for d in second.deltas if d.source == "store"}
+    assert "total" not in from_diff, \
+        "total was in the blast radius, so this proves nothing about the store"
+    assert "total" in from_store, \
+        f"a stored invariant did not catch the regression: {from_store}"
+    assert second.rechecked, "no invariant was re-checked"
+    broke = next(d for d in second.deltas if d.qualname == "total")
+    assert broke.base["value"] != broke.head["value"], broke
+    print(f"ok  a stored invariant caught {sorted(from_store)} "
+          f"that the diff passed; {second.rechecked} re-checked")
+
+
 if __name__ == "__main__":
     main()
+    stored_invariant_gate()

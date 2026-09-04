@@ -28,7 +28,9 @@ def render_call(d):
 
 
 def show_side(label, r):
-    print(f"         {paint(label, DIM)}  {r['kind']:<12} {paint(r['type'], DIM):<10} {r['value']}")
+    # Padded before painting: the escape codes are not printable width.
+    print(f"         {paint(f'{label:<6}', DIM)}  {r['kind']:<12}"
+          f" {paint(r['type'], DIM):<10} {r['value']}")
     if r["mutated"]:
         print(f"               {paint('after', DIM)}  {r['mutated']}")
     if r["stdout"]:
@@ -42,10 +44,15 @@ def show(rep, base, head):
     for g in groups:
         d = g[0]
         more = f"   {paint(f'+{len(g) - 1} more calls', DIM)}" if len(g) > 1 else ""
-        print(f"  {paint('DELTA', RED)}  {d.file} :: {d.qualname}{more}")
+        # A stored invariant has no base side to speak of. It is not reporting
+        # that the commit moved something, it is reporting that an answer
+        # somebody signed off on is no longer the answer.
+        store = d.source == "store"
+        label = "BROKE" if store else "DELTA"
+        print(f"  {paint(label, RED)}  {d.file} :: {d.qualname}{more}")
         print(f"         {render_call(d)}")
-        show_side("base", d.base)
-        show_side("head", d.head)
+        show_side("agreed" if store else "base", d.base)
+        show_side("now" if store else "head", d.head)
         print()
 
     n = len(groups)
@@ -57,6 +64,8 @@ def show(rep, base, head):
         f"{paint(findings, RED if n else GREEN)} · {checked}"
         f" · {rep.probes} probes ({rep.reached} reached the change)"
         f" · {rep.flaky} flaky dropped"
+        + (f" · {rep.rechecked} invariant{'' if rep.rechecked == 1 else 's'}"
+           " re-checked" if rep.rechecked else "")
         + (f" · {len(cluster(rep.known))} already accepted" if rep.known else "")
         + (f" · {rep.refused} the old code refused" if rep.refused else "")
     )

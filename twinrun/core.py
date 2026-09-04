@@ -144,6 +144,9 @@ class Delta:
     kind: str = "function"
     n_ctor: int = 0
     built: bool = False
+    is_async: bool = False
+    is_cm: bool = False
+    source: str = "diff"    # "store" once a stored invariant is what caught it
 
 
 @dataclass
@@ -156,6 +159,7 @@ class Report:
     refused: int = 0        # probes the oracle rejected as the wrong type
     known: list = field(default_factory=list)   # deltas a verdict already ruled on
     reached: int = 0        # of those, probes that executed a line the commit touched
+    rechecked: int = 0      # stored invariants re-run against head this time
 
 
 def git(repo, *args, check=True):
@@ -1658,7 +1662,7 @@ def _sweep(ch: Change, probes, bw: Path, hw: Path, repeats: int, timeout: float,
                 continue
             found.append(Delta(ch.file, ch.qualname, args, bs[0], hs[0], ch.kind,
                                1 if ch.instances else len(ch.ctor_params),
-                               bool(ch.instances)))
+                               bool(ch.instances), ch.is_async, ch.is_cm))
     return (kept, hits, flaky, refused, found), None
 
 
@@ -1670,7 +1674,11 @@ def verify(repo, base, head, limit=24, timeout=20.0, seed=0, repeats=2,
     base, head = resolve(repo, base), resolve(repo, head)
     rep = Report()
     changes = changed_functions(repo, base, head, include_tests)
-    if not changes:
+    # A stored invariant is checked whatever the commit did. That is the whole
+    # point of having one: the diff decides what to probe, and the regression
+    # worth catching is the one in code the diff gave no reason to look at.
+    invs = read_invariants(repo)
+    if not changes and not invs:
         return rep
 
     with tempfile.TemporaryDirectory() as td:
@@ -1767,6 +1775,11 @@ def verify(repo, base, head, limit=24, timeout=20.0, seed=0, repeats=2,
                 rep.checked += 1
                 rep.reached += hits
                 rep.deltas.extend(found)
+
+            if invs:
+                broke, rep.rechecked = check_invariants(
+                    hw, invs, repeats, timeout, td)
+                rep.deltas.extend(broke)
         finally:
             git(repo, "worktree", "remove", "--force", str(bw), check=False)
             git(repo, "worktree", "remove", "--force", str(hw), check=False)
@@ -1777,8 +1790,10 @@ def verify(repo, base, head, limit=24, timeout=20.0, seed=0, repeats=2,
     # how a check gets turned off.
     accepted = read_verdicts(repo)
     if accepted:
-        rep.known = [d for d in rep.deltas if fingerprint(d) in accepted]
-        rep.deltas = [d for d in rep.deltas if fingerprint(d) not in accepted]
+        rep.known = [d for d in rep.deltas
+                     if d.source == "diff" and fingerprint(d) in accepted]
+        rep.deltas = [d for d in rep.deltas
+                      if d.source != "diff" or fingerprint(d) not in accepted]
     return rep
 
 
@@ -1817,6 +1832,7 @@ def cluster(deltas: list[Delta]) -> list[list[Delta]]:
 
 
 VERDICTS = ".twinrun.json"
+CALLS = 5           # calls kept per finding, so an invariant is not one example
 
 
 def read_verdicts(repo) -> dict:
@@ -1836,6 +1852,65 @@ def read_verdicts(repo) -> dict:
     return data.get("accepted", {}) if isinstance(data, dict) else {}
 
 
+def read_invariants(repo) -> dict:
+    """The calls a verdict blessed, and the answer it blessed them at.
+
+    A verdict is not only a reason to stay quiet. Saying "that difference is
+    intended" states what the behaviour is now supposed to be, and that outlives
+    the commit it was said about. The diff decides what to probe, so a callable
+    the next commit does not touch is a callable the next run never runs; an
+    invariant is what carries the answer past that. Suppression forgets on
+    purpose. This is the half that remembers.
+    """
+    p = Path(repo) / VERDICTS
+    try:
+        data = json.loads(p.read_text())
+    except (OSError, ValueError):
+        return {}
+    return data.get("invariants", {}) if isinstance(data, dict) else {}
+
+
+def check_invariants(hw: Path, invs: dict, repeats: int, timeout: float,
+                     td: Path) -> tuple[list, int]:
+    """Run every blessed call against head, and report the ones that moved.
+
+    No base side, because there is nothing to compare against: the stored answer
+    is the oracle. That is the difference the store buys -- a regression here is
+    one the diff had no reason to look for.
+    """
+    out, n = [], 0
+    for _, inv in sorted(invs.items()):
+        calls = inv["calls"]
+        runs, ok = [], True
+        for _ in range(max(2, repeats)):
+            data, _err = _invoke(hw, {
+                "file": inv["file"], "qualname": inv["qualname"],
+                "kind": inv["kind"], "is_async": inv.get("is_async", False),
+                "is_cm": inv.get("is_cm", False), "n_ctor": inv["n_ctor"],
+                "built": inv["built"], "lines": [],
+                "probes": [c["args"] for c in calls],
+            }, timeout, td)
+            if data is None or len(data.get("results") or []) != len(calls):
+                ok = False          # renamed, deleted or unimportable: not a regression
+                break
+            runs.append(data["results"])
+        if not ok:
+            continue
+        for i, c in enumerate(calls):
+            got = [r[i] for r in runs]
+            # A call that cannot agree with itself cannot be held to an answer.
+            if any(g != got[0] for g in got):
+                continue
+            n += 1
+            if got[0] != c["expect"]:
+                out.append(Delta(inv["file"], inv["qualname"], c["args"],
+                                 c["expect"], got[0], inv["kind"],
+                                 inv["n_ctor"], inv["built"],
+                                 inv.get("is_async", False),
+                                 inv.get("is_cm", False), source="store"))
+    return out, n
+
+
 def write_verdicts(repo, deltas, note: str = "") -> int:
     """Record every current finding as intended. Returns how many were new."""
     p = Path(repo) / VERDICTS
@@ -1843,17 +1918,33 @@ def write_verdicts(repo, deltas, note: str = "") -> int:
         data = json.loads(p.read_text())
     except (OSError, ValueError):
         data = {}
-    accepted = data.setdefault("accepted", {}) if isinstance(data, dict) else {}
+    if not isinstance(data, dict):
+        data = {}
+    accepted = data.setdefault("accepted", {})
+    invariants = data.setdefault("invariants", {})
     added = 0
     for g in cluster(deltas):
         d = g[0]
         fp = fingerprint(d)
-        if fp in accepted:
+        # A verdict that came out of the store is a verdict about the stored
+        # answer, and re-blessing it would write down the regression.
+        if fp in accepted or d.source != "diff":
             continue
         accepted[fp] = {"where": f"{d.file}::{d.qualname}",
                         "was": f"{d.base['kind']} {d.base['type']}",
                         "now": f"{d.head['kind']} {d.head['type']}",
                         "note": note}
+        # Every call in the cluster, not just the one the report printed. A
+        # single call is a thin thing to hold code to: `total(0)` survived
+        # `scale` changing from doubling to tripling, because zero is a fixed
+        # point of both. The calls that exposed one difference are the ones
+        # most likely to expose the next.
+        invariants[fp] = {"file": d.file, "qualname": d.qualname, "kind": d.kind,
+                          "n_ctor": d.n_ctor, "built": d.built,
+                          "is_async": d.is_async, "is_cm": d.is_cm,
+                          "calls": [{"args": x.args, "expect": x.head}
+                                    for x in g[:CALLS]]}
         added += 1
-    p.write_text(json.dumps({"accepted": accepted}, indent=1, sort_keys=True) + "\n")
+    p.write_text(json.dumps({"accepted": accepted, "invariants": invariants},
+                            indent=1, sort_keys=True) + "\n")
     return added
