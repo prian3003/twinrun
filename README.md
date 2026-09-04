@@ -33,7 +33,10 @@ Exits 1 when there is a finding, 2 on a usage error, so it drops into CI as-is.
 1. **Blast radius** — diff the two revisions, parse both sides, keep the callables
    whose AST actually changed, plus one level of their callers in the same file.
    Extracting a helper leaves its callers byte-identical while their behaviour
-   moves underneath them, and the caller is the name anyone actually calls.
+   moves underneath them, and the caller is the name anyone actually calls. A
+   caller is a guess, so it is asked to reach any line the commit moved in that
+   file rather than one of its own, and a guess that reaches none of them is
+   dropped instead of reported: the commit never touched it.
    Comments, formatting, docstrings, annotations and parameter names never reach
    step 2. Each of them is a node, so editing one makes the AST differ, and none
    of them is something an output comparison can see. Dropping them removes four commits
@@ -188,7 +191,11 @@ Exits 1 when there is a finding, 2 on a usage error, so it drops into CI as-is.
 
    A line trace scoped to the target file records which probes executed a line
    the commit actually moved, because calling a changed callable is not the same
-   as reaching the change inside it. Across the 51 non-merge itsdangerous
+   as reaching the change inside it. A callable is asked for its own moved lines
+   and nobody else's: the hunk names lines in a file, probing a method builds
+   the instance first, and a commit that touches `__init__` alongside a method
+   had every method on the class reporting coverage of an edit its own body
+   never ran. Across the 51 non-merge itsdangerous
    commits since 2020 that touch the package — 29 of which leave anything
    executable to run — 4001 of 5269 probes reach it; the rest run the function
    around the edit. A callable that nothing reached and that produced no delta
@@ -293,6 +300,12 @@ both revisions have to agree it does.
 
 `*args`, `**kwargs`, and keyword-only parameters that have defaults: none of them
 needs a value, so the callable is probed on its positional parameters.
+
+A generator function is drained to a bounded prefix rather than called and left
+alone. Calling one runs no line of its body, so the comparison was two
+`<generator object>` reprs -- identical on every commit once the address is
+scrubbed -- and the tracer saw nothing. The yields are the answer, and an
+endless one stops at the cap.
 
 Skipped, with the reason printed: an async generator (no one result to compare)
 and a callable that changed between sync and async (a different way of being
