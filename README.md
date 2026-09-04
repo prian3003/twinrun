@@ -476,9 +476,9 @@ runs it against itsdangerous on every push, so a change here that stops the
 tool catching `f513b48d` fails the build.
 
 What a framework costs is worth stating plainly. Across the 509 click commits
-since 2019 that touch `src/click`, the tool checks 1491 callables and lands
-18389 of 44674 probes on a changed line. It skips 352 callables because it
-could not build an input at all, and 297 because every probe ran without
+since 2019 that touch `src/click`, the tool checks 1492 callables and lands
+18393 of 44678 probes on a changed line. It skips 352 callables because it
+could not build an input at all, and 296 because every probe ran without
 reaching the change. 194 of that first number is one class: a commit
 that touches `Option.__init__` takes the test suite's own constructions away
 from every method on it, and what is left to build one with is the synthesised
