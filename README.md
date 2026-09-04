@@ -195,14 +195,14 @@ Exits 1 when there is a finding, 2 on a usage error, so it drops into CI as-is.
    and nobody else's: the hunk names lines in a file, probing a method builds
    the instance first, and a commit that touches `__init__` alongside a method
    had every method on the class reporting coverage of an edit its own body
-   never ran. Across the 51 non-merge itsdangerous
-   commits since 2020 that touch the package — 29 of which leave anything
-   executable to run — 4001 of 5269 probes reach it; the rest run the function
-   around the edit. A callable that nothing reached and that produced no delta
-   is reported as skipped rather than counted as checked: 33 of the 60 skips on
-   that sweep, against 203 callables checked. A delta
-   overrides the reach test: a moved default argument or class attribute is
-   evaluated at import, before the trace starts, and differs anyway.
+   never ran. Across the 51 non-merge itsdangerous commits since
+   2019 that touch the package — 29 of which leave anything executable to run —
+   3791 of 5268 probes reach it; the rest run the function around the edit. A
+   callable that nothing reached and that produced no delta is reported as
+   skipped rather than counted as checked: 12 of the 39 skips on that sweep,
+   against 202 callables checked. A delta overrides the reach test: a moved
+   default argument or class attribute is evaluated at import, before the trace
+   starts, and differs anyway.
 6. **Normalise** — the two revisions are checked out at different paths, so
    anything that surfaces its own location (a cwd, a `__file__`, a path inside an
    error message) would differ for a reason that has nothing to do with the
@@ -307,13 +307,18 @@ alone. Calling one runs no line of its body, so the comparison was two
 scrubbed -- and the tracer saw nothing. The yields are the answer, and an
 endless one stops at the cap.
 
+`__init__` is probed directly, by calling the class: a constructor returns
+nothing, so the instance it leaves behind is the answer. Reading it off the
+methods instead reported one attribute rename once per method, and never at the
+line it happened on.
+
 Skipped, with the reason printed: an async generator (no one result to compare)
 and a callable that changed between sync and async (a different way of being
-called), decorators that are not markers, a keyword-only
-parameter with no default, `__init__` (observed through the instance state its methods report), signatures that
-changed in a way that leaves no identical-input comparison, callables for which
-no usable input could be built, and callables no probe reached. Untyped parameters get a generic spread, which
-usually lands on `TypeError` identically on both sides and reports nothing.
+called), decorators that are not markers, a keyword-only parameter with no
+default, signatures that changed in a way that leaves no identical-input
+comparison, callables for which no usable input could be built, and callables
+no probe reached. Untyped parameters get a generic spread, which usually lands
+on `TypeError` identically on both sides and reports nothing.
 
 A probe never shells out or opens a socket. `subprocess`, `os.system`, `exec*`
 and `webbrowser` print the command they were handed instead of running it, which
@@ -352,13 +357,14 @@ runs it against itsdangerous on every push, so a change here that stops the
 tool catching `f513b48d` fails the build.
 
 What a framework costs is worth stating plainly. Across the 509 click commits
-since 2019 that touch `src/click`, the tool checks 1262 callables and lands
-16446 of 39737 probes on a changed line. It skips 900 callables because every
-probe ran without reaching the change, and 497 because it could not build an
-input at all. click's world is `Context`, `Command`, `Option` and `Parameter`,
-each wanting another of its own kind, and two levels of constructor synthesis
-is not the whole of it. The same sweep over itsdangerous — a library of leaf
-types — skips 33 and 4.
+since 2019 that touch `src/click`, the tool checks 1260 callables and lands
+15986 of 39332 probes on a changed line. It skips 496 callables because it
+could not build an input at all, and 266 because every probe ran without
+reaching the change. click's world is `Context`, `Command`, `Option` and
+`Parameter`, each wanting another of its own kind, and two levels of
+constructor synthesis is not the whole of it — a third was measured and moved
+that first number by nothing. The same sweep over itsdangerous — a library of
+leaf types — skips 4 and 12.
 
 ## Prior art
 
