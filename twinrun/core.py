@@ -1689,6 +1689,14 @@ def _sweep(ch: Change, probes, bw: Path, hw: Path, repeats: int, timeout: float,
         kept += 1
         if i < len(reached) and reached[i]:
             hits += 1
+        # Neither side got as far as the callable: the argument expressions did
+        # not evaluate, or the receiver did not build. Two different ways of
+        # failing to build an input say nothing about the commit, and the
+        # difference between them can be loud -- `_ValueT_co()` is a NameError
+        # on one revision and "'typing.TypeVar' object is not callable" on the
+        # other, which is the TypeVar moving, not the function under test.
+        if bs[0]["kind"] in dead and hs[0]["kind"] in dead:
+            continue
         if bs[0] != hs[0]:
             if bs[0]["kind"] == "raise" and bs[0]["type"] in REFUSED:
                 refused += 1
