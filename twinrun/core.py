@@ -303,6 +303,20 @@ def _fmt(params):
     return ", ".join(_names(params))
 
 
+def _matched(a, b) -> bool:
+    """Whether a positional call means the same thing on both parameter lists.
+
+    A probe passes values by position, so a renamed parameter is the same call
+    written differently and the comparison still holds -- and renaming one was
+    reported as a signature change with no identical-input comparison. Either
+    the name stayed or the annotation still means what it meant. Two parameters
+    swapped is not excused by that: they have to carry the same type before the
+    swap is invisible, and then it is the regression worth reporting.
+    """
+    return len(a) == len(b) and all(
+        n == m or _typekey(x) == _typekey(y) for (n, x), (m, y) in zip(a, b))
+
+
 def _reconcile(base_params, head_params, head_defaults):
     """The parameter list both revisions can be called with, or None.
 
@@ -311,10 +325,10 @@ def _reconcile(base_params, head_params, head_defaults):
     calls still do the old thing. When head only appends optional parameters,
     that question still has an answer: call both sides with the old list.
     """
-    if _names(base_params) == _names(head_params):
+    if _matched(base_params, head_params):
         return head_params
     added = len(head_params) - len(base_params)
-    if 0 < added <= head_defaults and _names(head_params[:len(base_params)]) == _names(base_params):
+    if 0 < added <= head_defaults and _matched(head_params[:len(base_params)], base_params):
         return head_params[:len(base_params)]
     return None
 

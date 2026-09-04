@@ -126,6 +126,10 @@ def scale(x: int) -> int:
     return x * 2
 
 
+def shorten(text: str) -> str:
+    return text.replace(" ", "-")
+
+
 class Ticket:
     def __init__(self, tag: str = ""):
         if not tag:
@@ -310,6 +314,10 @@ def area(w: int, h: int = 2) -> int:              # appended an optional paramet
 
 def scale(x: int, factor: int) -> int:            # appended a required parameter
     return x * factor
+
+
+def shorten(label: str) -> str:                      # renamed, which a positional
+    return label.replace(" ", "_")                # probe cannot see
 
 
 class Ticket:                                     # every parameter optional, and
@@ -560,11 +568,15 @@ def main():
     assert "Crate.empty" not in skipped, \
         f"the constructor ran outside the trace: {skipped.get('Crate.empty')!r}"
 
-    assert rep.checked == 27, f"expected 27 callables twin-run, got {rep.checked}"
+    assert rep.checked == 28, f"expected 28 callables twin-run, got {rep.checked}"
     # Nothing builds a Feed, so the receiver has to be the RssFeed the suite
     # constructs. Without that the whole class is skipped for want of an input.
     assert any(d.qualname == "Feed.heading" for d in rep.deltas), \
         "an abstract receiver went unprobed"
+    # A probe passes values by position, so a renamed parameter is the same
+    # call written differently and the two sides are still comparable.
+    assert any(d.qualname == "shorten" for d in rep.deltas), \
+        "a renamed parameter was read as a signature change"
     # @cached_property is @property with the answer kept, and @abstractmethod is
     # a marker: neither is a reason to skip, and Feed.heading below carries one.
     assert any(d.qualname == "Shelf.depth" for d in rep.deltas), \
