@@ -307,6 +307,7 @@ twinrun ~/work/api --base main --head my-branch
 | `--repeats` | `2` | runs per side used to detect non-determinism |
 | `--accept` | | record the current findings as intended, in `.twinrun.json`, and keep the calls as invariants |
 | `--note` | | a line stored alongside what `--accept` records |
+| `--llm` | off | when nothing can be built, or nothing reaches the change, ask a model for an input |
 
 CI runs the self-check on 3.10/3.12/3.13, and on every pull request twinrun
 verifies that pull request against its own base branch.
@@ -397,6 +398,33 @@ doubling and of tripling, and one example is a thin thing to hold code to. A
 call that disagrees with itself is dropped the way any other flaky probe is,
 and a callable that has been renamed or deleted is not a regression, so it is
 passed over rather than reported.
+
+### Asking for an input twinrun cannot build
+
+Every value it probes with comes from an annotation, a guard literal, or a
+construction lifted out of the test suite, and on click that leaves 648
+callables unprobed: 352 where nothing could be built at all, and 296 where
+something was built and no probe ran a line the commit moved. Both are one
+failure -- a type the corpus does not model, or a value too specific to guess
+-- and it is the largest single thing standing between the tool and the rest of
+a repository.
+
+`--llm` asks for those inputs, and asks for nothing else. The model is shown
+the callable at the base revision with the moved lines marked, and returns
+expressions for the parameters. It never sees the two revisions, never compares
+them, and never says whether a difference matters: the old revision remains the
+only oracle. A suggestion arrives as expressions in a column, indistinguishable
+downstream from a corpus value -- evaluated in the target module, run on both
+sides, held to the same flake and contract filters. A wrong one is a probe that
+raises identically on both sides, which a run already tolerates by the
+thousand.
+
+It is off by default, needs `ANTHROPIC_API_KEY`, and is asked only after
+everything free has failed, so a run that builds its own inputs never pays for
+it. **The gain is not yet measured.** Every other synthesis idea here was A/B'd
+on a real sweep before being kept, and two were reverted for measuring at zero;
+this one has a harness and no number yet, and should be read as unproven until
+it has one.
 
 ## What it covers
 

@@ -23,6 +23,8 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from . import llm
+
 CHILD = Path(__file__).parent / "_child.py"
 
 # Probe corpus. Deliberately small and boring: edge values a human would try.
@@ -160,6 +162,7 @@ class Report:
     known: list = field(default_factory=list)   # deltas a verdict already ruled on
     reached: int = 0        # of those, probes that executed a line the commit touched
     rechecked: int = 0      # stored invariants re-run against head this time
+    asked: int = 0          # callables only probed because a model proposed the input
 
 
 def git(repo, *args, check=True):
@@ -1410,16 +1413,25 @@ def _values(ann: str, ctors: dict | None = None,
     return ["None"] if optional else [f"{head}()"]
 
 
-def make_probes(change: Change, limit: int, seed: int = 0):
-    """One probe is the constructor arguments followed by the call arguments."""
+def make_probes(change: Change, limit: int, seed: int = 0, extra: dict | None = None):
+    """One probe is the constructor arguments followed by the call arguments.
+
+    `extra` is expressions proposed for a parameter by name. They go to the
+    front of that column, ahead of the corpus, and they stand in for it entirely
+    where the corpus had nothing -- which is the case that asked for them.
+    """
     cols = []
     inst = change.instances
     if inst:
         cols.append(inst)
     for pname, ann in [*([] if inst else change.ctor_params), *change.params]:
         v = _values(ann, change.ctors, change.producers, hints=change.hints)
+        sug = (extra or {}).get(pname) or []
         if v is None:
-            return None, f"unmodelled type {ann!r} on {pname}"
+            if not sug:
+                return None, f"unmodelled type {ann!r} on {pname}"
+            v = []
+        v = sug + [x for x in v if x not in sug]
         # A guard literal goes to the front. The sampler covers index 0 of every
         # column in its first probe, so one probe carries every constant at once
         # -- which is what a guard reading `a == 1 and b == 2` needs.
@@ -1613,6 +1625,27 @@ def _agree(bsig, hsig, required_only: bool):
     return [(n, a) for n, a, d in trimmed if not (required_only and d)]
 
 
+def _ask(bw: Path, hw: Path, ch: Change, limit: int, seed: int, repeats: int,
+         timeout: float, td: Path):
+    """Last resort: let a model propose the inputs, then run them like any other.
+
+    Nothing downstream knows where these came from. They are expressions in a
+    column, evaluated in the target module, run on both revisions, and held to
+    the same flake and contract filters -- so a suggestion that is wrong is a
+    probe that raises on both sides, and a suggestion that is right is a
+    callable that was not being checked at all.
+    """
+    params = [*([] if ch.instances else ch.ctor_params), *ch.params]
+    extra = llm.propose(bw, ch, params)
+    if not extra:
+        return None
+    probes, _why = make_probes(ch, limit, seed, extra)
+    if not probes:
+        return None
+    res, _err = _sweep(ch, probes, bw, hw, repeats, timeout, td)
+    return res
+
+
 def _sweep(ch: Change, probes, bw: Path, hw: Path, repeats: int, timeout: float,
            td: Path):
     """Run both sides on these probes and tally the result.
@@ -1667,12 +1700,15 @@ def _sweep(ch: Change, probes, bw: Path, hw: Path, repeats: int, timeout: float,
 
 
 def verify(repo, base, head, limit=24, timeout=20.0, seed=0, repeats=2,
-           include_tests=False) -> Report:
+           include_tests=False, use_llm=False) -> Report:
     repo = Path(repo).resolve()
     if not (repo / ".git").exists():
         raise RuntimeError(f"{repo} is not a git repository")
     base, head = resolve(repo, base), resolve(repo, head)
     rep = Report()
+    # Asking costs money and a round trip, so it is off unless it was asked for
+    # and there is a key to ask with.
+    use_llm = use_llm and llm.available()
     changes = changed_functions(repo, base, head, include_tests)
     # A stored invariant is checked whatever the commit did. That is the whole
     # point of having one: the diff decides what to probe, and the regression
@@ -1717,6 +1753,24 @@ def verify(repo, base, head, limit=24, timeout=20.0, seed=0, repeats=2,
 
                 resolve_producers(bw, ch, timeout, td)
                 probes, why = make_probes(ch, limit, seed)
+                if probes is None and use_llm:
+                    # An annotation the corpus does not model never reaches the
+                    # sweep, so this rescue has to happen here rather than after
+                    # a failure to build. It is the same failure.
+                    rescued = _ask(bw, hw, ch, limit, seed, repeats, timeout, td)
+                    if rescued:
+                        rep.asked += 1
+                        kept, hits, flaky, refused, found = rescued
+                        rep.probes += kept
+                        rep.flaky += flaky
+                        rep.refused += refused
+                        if kept and (hits or found or not any(ch.lines.values())):
+                            rep.checked += 1
+                            rep.reached += hits
+                            rep.deltas.extend(found)
+                            continue
+                    rep.skipped.append((ch.qualname, why))
+                    continue
                 if probes is None:
                     rep.skipped.append((ch.qualname, why))
                     continue
@@ -1738,6 +1792,10 @@ def verify(repo, base, head, limit=24, timeout=20.0, seed=0, repeats=2,
                         if retry:
                             res, err = _sweep(ch, retry, bw, hw, repeats,
                                               timeout, td)
+                if res is None and use_llm:
+                    rescued = _ask(bw, hw, ch, limit, seed, repeats, timeout, td)
+                    if rescued:
+                        res, rep.asked = rescued, rep.asked + 1
                 if res is None:
                     if ch.ctor_changed and "no usable inputs" in err:
                         # The synthesised construction failed, and the reason the
@@ -1762,6 +1820,19 @@ def verify(repo, base, head, limit=24, timeout=20.0, seed=0, repeats=2,
                 # not verified. A delta overrides that: a moved default argument
                 # or class attribute is evaluated at import, before the trace
                 # starts, and differs without any moved line being stepped on.
+                if kept and not hits and not found and any(ch.lines.values()):
+                    # The corpus built something and it landed short of the
+                    # change. Ask for values aimed at the moved lines; the cost
+                    # of the first sweep stands either way, because it ran.
+                    if use_llm:
+                        again = _ask(bw, hw, ch, limit, seed, repeats, timeout, td)
+                        if again:
+                            kept, hits, flaky, refused, found = again
+                            rep.probes += kept
+                            rep.flaky += flaky
+                            rep.refused += refused
+                            if hits or found:
+                                rep.asked += 1
                 if kept and not hits and not found and any(ch.lines.values()):
                     # A caller is a guess -- it is here because it names a
                     # changed helper, not because the commit touched it -- and

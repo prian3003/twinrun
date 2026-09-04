@@ -6,6 +6,7 @@ Run: python3 test_twinrun.py
 
 import ast
 import builtins
+import os
 import subprocess
 import sys
 import tempfile
@@ -914,7 +915,69 @@ def mcp_gate():
           f"{found[0]['base']} -> {found[0]['head']}")
 
 
+def llm_gate():
+    """A proposed input is a probe like any other, and only that.
+
+    The transport is stubbed because what is worth checking is not that an HTTP
+    request can be made. It is that a suggestion reaches the column machinery,
+    survives parsing, gets run on both revisions, and produces a finding the
+    corpus could not have produced -- and that with the flag off none of it
+    happens.
+    """
+    from twinrun import llm
+
+    assert llm._parse('sure! {"t": ["int", "1+", 5, "str"], "z": ["9"]}', ["t"]) \
+        == {"t": ["int", "str"]}, "a non-expression or a stray key got through"
+    assert llm._parse("no json here", ["t"]) == {}
+
+    with tempfile.TemporaryDirectory() as td:
+        repo = Path(td) / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", "-b", "main", str(repo)],
+                       check=True, capture_output=True)
+        git(repo, "config", "user.email", "dev@example.com")
+        git(repo, "config", "user.name", "dev")
+        # typing.Type is a type the corpus does not model, so nothing is built
+        # for it and the callable is skipped before any sweep happens.
+        src = ("import typing\n\n\n"
+               "def label(t: typing.Type) -> str:\n    return t.__name__ + %r\n")
+        (repo / "m.py").write_text(src % "!")
+        git(repo, "add", "-A")
+        git(repo, "commit", "-qm", "label")
+        (repo / "m.py").write_text(src % "?")
+        git(repo, "add", "-A")
+        git(repo, "commit", "-qm", "label ends differently")
+
+        off = verify(repo, "HEAD~1", "HEAD", limit=8)
+        assert not off.deltas and any("unmodelled" in why for _, why in off.skipped), \
+            f"this fixture is meant to be unprobeable without help: {off.skipped}"
+
+        calls, real = [], llm._post
+        llm._post = lambda prompt: (calls.append(prompt),
+                                    '{"t": ["int", "ValueError"]}')[1]
+        try:
+            with tempfile.TemporaryDirectory() as cache:
+                os.environ["TWINRUN_CACHE"] = cache
+                os.environ.setdefault("ANTHROPIC_API_KEY", "test")
+                on = verify(repo, "HEAD~1", "HEAD", limit=8, use_llm=True)
+        finally:
+            llm._post = real
+            os.environ.pop("TWINRUN_CACHE", None)
+
+    assert calls, "the model was never asked"
+    assert ">>" in calls[0] and "def label" in calls[0], \
+        f"the prompt carried no marked source: {calls[0][:400]}"
+    got = {d.qualname for d in on.deltas}
+    assert got == {"label"}, f"a proposed input found nothing: {got} {on.skipped}"
+    d = next(d for d in on.deltas)
+    assert d.base["value"] != d.head["value"], d
+    assert on.asked == 1, on.asked
+    print(f"ok  a proposed input checked {d.qualname}{tuple(d.args)}: "
+          f"{d.base['value']} -> {d.head['value']}")
+
+
 if __name__ == "__main__":
     main()
     stored_invariant_gate()
     mcp_gate()
+    llm_gate()

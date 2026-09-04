@@ -68,6 +68,7 @@ def show(rep, base, head):
            " re-checked" if rep.rechecked else "")
         + (f" · {len(cluster(rep.known))} already accepted" if rep.known else "")
         + (f" · {rep.refused} the old code refused" if rep.refused else "")
+        + (f" · {rep.asked} asked for" if rep.asked else "")
     )
     for name, why in rep.skipped:
         print(paint(f"  skipped {name}: {why}", YELLOW))
@@ -92,11 +93,15 @@ def main(argv=None):
                     help=f"record every current finding in {VERDICTS} as intended, "
                          "so later runs stop reporting it")
     ap.add_argument("--note", default="", help="a line stored with --accept")
+    ap.add_argument("--llm", action="store_true",
+                    help="when no input can be built, or none reaches the change, "
+                         "ask a model for one (needs ANTHROPIC_API_KEY)")
     a = ap.parse_args(argv)
 
     try:
         rep = verify(a.repo, a.base, a.head, limit=a.limit, timeout=a.timeout, seed=a.seed,
-                     repeats=a.repeats, include_tests=a.include_tests)
+                     repeats=a.repeats, include_tests=a.include_tests,
+                     use_llm=a.llm)
     except RuntimeError as e:
         print(f"twinrun: {e}", file=sys.stderr)
         return 2
