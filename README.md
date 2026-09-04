@@ -338,12 +338,14 @@ nothing. Of the seven that ran, five are reported:
 runs it against itsdangerous on every push, so a change here that stops the
 tool catching `f513b48d` fails the build.
 
-What a framework costs is worth stating plainly. Across 58 click commits, the
-tool checks 381 callables and lands 4816 of 10778 probes on a changed line —
-and skips 256 callables because it could not build an input for them. click's
-world is `Context`, `Command`, `Option` and `Parameter`, each wanting another
-of its own kind, and two levels of constructor synthesis is not the whole of
-it. A library of leaf types like itsdangerous skips 4.
+What a framework costs is worth stating plainly. Across the 509 click commits
+since 2019 that touch `src/click`, the tool checks 1262 callables and lands
+16446 of 39737 probes on a changed line. It skips 900 callables because every
+probe ran without reaching the change, and 497 because it could not build an
+input at all. click's world is `Context`, `Command`, `Option` and `Parameter`,
+each wanting another of its own kind, and two levels of constructor synthesis
+is not the whole of it. The same sweep over itsdangerous — a library of leaf
+types — skips 33 and 4.
 
 ## Prior art
 
