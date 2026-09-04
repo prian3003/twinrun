@@ -197,10 +197,10 @@ Exits 1 when there is a finding, 2 on a usage error, so it drops into CI as-is.
    had every method on the class reporting coverage of an edit its own body
    never ran. Across the 51 non-merge itsdangerous commits since
    2019 that touch the package — 29 of which leave anything executable to run —
-   3791 of 5268 probes reach it; the rest run the function around the edit. A
+   3751 of 5261 probes reach it; the rest run the function around the edit. A
    callable that nothing reached and that produced no delta is reported as
-   skipped rather than counted as checked: 12 of the 39 skips on that sweep,
-   against 202 callables checked. A delta overrides the reach test: a moved
+   skipped rather than counted as checked: 15 of the 42 skips on that sweep,
+   against 199 callables checked. A delta overrides the reach test: a moved
    default argument or class attribute is evaluated at import, before the trace
    starts, and differs anyway.
 6. **Normalise** — the two revisions are checked out at different paths, so
@@ -208,7 +208,11 @@ Exits 1 when there is a finding, 2 on a usage error, so it drops into CI as-is.
    error message) would differ for a reason that has nothing to do with the
    change. Both checkout roots collapse to `<repo>` before anything is compared,
    and the address inside a default `repr` collapses with them — left in, it makes
-   every object-valued result look non-deterministic.
+   every object-valued result look non-deterministic. The random half of a
+   temporary file's name goes the same way: a function that makes one answers
+   differently on every run, so its probe was dropped as flaky, and where two
+   runs on one side happened to agree it reported a difference that was only the
+   name. What the code put underneath the temporary directory survives.
 7. **Flake filter** — every probe runs twice per side. If a side disagrees with
    itself the probe is non-deterministic, and it is dropped rather than reported.
    Clocks, RNG, hash ordering and network calls come out here.
@@ -220,7 +224,7 @@ Exits 1 when there is a finding, 2 on a usage error, so it drops into CI as-is.
    with each other, and the two sides differ for a reason that has nothing to do
    with the commit. Interleaved, both sides straddle the same window and the
    drift surfaces as a side disagreeing with itself. Two runs of the itsdangerous
-   sweep now report the same 36 findings; before, the count moved between runs.
+   sweep now report the same 20 findings; before, the count moved between runs.
 
    Two runs catch noise with a wide range of outcomes. A target that returns one
    of only a handful of values can still agree with itself by chance — roughly a
@@ -293,10 +297,11 @@ finding is reported.
 ## What it covers
 
 Module-level functions, instance methods, `@staticmethod` and `@classmethod`.
-`@property`, called by reading it, because what it computes is behaviour like
-anything else. `async def`, awaited in the child. A function behind a marker
-decorator — one that records something and returns the function unchanged, which
-both revisions have to agree it does.
+`@property` and `@cached_property`, called by reading them, because what they
+compute is behaviour like anything else. `async def`, awaited in the child.
+`@contextmanager`, entered. A function behind a marker decorator — `@abstractmethod`,
+or one in the module that records something and returns the function unchanged,
+which both revisions have to agree it does.
 
 `*args`, `**kwargs`, and keyword-only parameters that have defaults: none of them
 needs a value, so the callable is probed on its positional parameters.
@@ -306,6 +311,11 @@ alone. Calling one runs no line of its body, so the comparison was two
 `<generator object>` reprs -- identical on every commit once the address is
 scrubbed -- and the tracer saw nothing. The yields are the answer, and an
 endless one stops at the cap.
+
+A `@contextmanager` is entered rather than compared, for the same reason:
+calling one runs no line of the body and hands back a manager object that looks
+the same on both sides. Entering runs the body up to the yield, leaving runs the
+rest, and what it yields is what a `with` would have given the caller.
 
 `__init__` is probed directly, by calling the class: a constructor returns
 nothing, so the instance it leaves behind is the answer. Reading it off the
@@ -349,7 +359,7 @@ nothing. Of the seven that ran, five are reported:
 | ✓ | werkzeug `2c2cc69b` | `is_known_charset` answers differently |
 | ✓ | jinja `1167525b` | a delta in `main` (a rename; a weak pair) |
 | ✓ | click `8bc91271` | `format_completion` stops escaping a colon |
-| ✗ | click `6c4a77ba` | runs, reaches nothing that separates the two |
+| ✗ | click `6c4a77ba` | `Option.__init__` takes `default` through `**attrs`, which no probe can fill |
 | ✗ | werkzeug `0cd2da5d` | thread start ordering, which no probe observes |
 
 `python3 regressions.py <repo>` reproduces the table on any repository, and CI
@@ -357,14 +367,14 @@ runs it against itsdangerous on every push, so a change here that stops the
 tool catching `f513b48d` fails the build.
 
 What a framework costs is worth stating plainly. Across the 509 click commits
-since 2019 that touch `src/click`, the tool checks 1260 callables and lands
-15986 of 39332 probes on a changed line. It skips 496 callables because it
-could not build an input at all, and 266 because every probe ran without
+since 2019 that touch `src/click`, the tool checks 1455 callables and lands
+17862 of 43218 probes on a changed line. It skips 339 callables because it
+could not build an input at all, and 289 because every probe ran without
 reaching the change. click's world is `Context`, `Command`, `Option` and
 `Parameter`, each wanting another of its own kind, and two levels of
 constructor synthesis is not the whole of it — a third was measured and moved
 that first number by nothing. The same sweep over itsdangerous — a library of
-leaf types — skips 4 and 12.
+leaf types — skips 4 and 15.
 
 ## Prior art
 
@@ -400,8 +410,8 @@ against itsdangerous `37f0997`, where `TimestampSigner.unsign` routes through
 `hmac` and `hashlib`, it ran 20m01s and 7391 iterations and reported no
 difference; z3 has no theory for SHA-1, so it cannot construct a signature that
 verifies, and every path past that check stays unreachable. twinrun does that
-commit in 1.5s — 4 callables, 84 probes, 3 findings — because concrete execution
-does not care what a function is made of, and because it finds the four callables
+commit in 1.7s — 2 callables, 71 probes, 2 findings — because concrete execution
+does not care what a function is made of, and because it finds the callables
 itself from the git range instead of being handed a pair of names.
 
 ## Limits today
