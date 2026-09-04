@@ -17,6 +17,7 @@ import io
 import json
 import re
 import sys
+import tempfile
 from pathlib import Path
 
 LIMIT = 2000
@@ -30,6 +31,13 @@ ROOTS = []
 # A default repr carries the object's address, which changes every run. Left in,
 # it makes every object-valued result look non-deterministic.
 ADDR = re.compile(r"(?<= at 0x)[0-9a-fA-F]+(?=>)")
+
+# The name of a temporary file is random by design, so a function that makes one
+# answers differently every run and its probe is dropped as flaky -- which is
+# what `CliRunner.isolated_filesystem` does, and what every helper that writes a
+# scratch file does. Only the one segment the interpreter chose is collapsed:
+# what the code put underneath it is still the answer.
+TMP = re.compile(re.escape(tempfile.gettempdir().rstrip("/")) + r"/[^/\s'\"]+")
 
 # The target file, and the lines in it the commit touched. A probe that calls the
 # changed callable without executing one of these ran the function, not the edit.
@@ -60,6 +68,7 @@ def cap(s):
     for r in ROOTS:
         s = s.replace(r, "<repo>")
     s = ADDR.sub("...", s)
+    s = TMP.sub("<tmp>", s)
     return s if len(s) <= LIMIT else s[:LIMIT] + f"...<{len(s)} chars total>"
 
 

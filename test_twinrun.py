@@ -13,7 +13,7 @@ import types
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from twinrun._child import GEN_CAP, Sibling
+from twinrun._child import GEN_CAP, Sibling, cap
 from twinrun._child import call as child_call
 from twinrun.core import (_ctor_exprs, _ctor_map, _own, _targets, _typekey, _values,
                           cluster, verify, write_verdicts)
@@ -673,6 +673,10 @@ class Box:
     # taking that for a class the module defines made the probe `V()`, which
     # raises "'typing.TypeVar' object is not callable" and takes every probe
     # for that callable with it.
+    # A temporary name is different every run, so a function that makes one
+    # answers differently on both sides and its probe is dropped as flaky.
+    scratch = str(Path(tempfile.gettempdir()) / "tmpq1w2e3" / "note.txt")
+    assert cap(scratch) == "<tmp>/note.txt", cap(scratch)
     assert _values("~V") == _values(""), "an unbound type variable says what Any says"
     assert _values("t.Iterable[~V]")[0] == "[]", _values("t.Iterable[~V]")
 
