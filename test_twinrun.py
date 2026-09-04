@@ -4,13 +4,17 @@ has to tell apart, and asserts it tells them apart.
 Run: python3 test_twinrun.py
 """
 
+import ast
+import builtins
 import subprocess
 import sys
 import tempfile
+import types
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from twinrun._child import Sibling
+from twinrun._child import GEN_CAP, Sibling
+from twinrun._child import call as child_call
 from twinrun.core import (_ctor_exprs, _ctor_map, _own, _targets, _typekey, _values,
                           cluster, verify, write_verdicts)
 
@@ -563,6 +567,28 @@ class Box:
     lines = list(range(1, 7))
     assert _own(t["Box.__init__"][0], lines) == [3, 4], _own(t["Box.__init__"][0], lines)
     assert _own(t["Box.size"][0], lines) == [5, 6], _own(t["Box.size"][0], lines)
+
+    # A generator function returns without running a line of its own body: the
+    # probe compared two <generator object> reprs, which match on every commit,
+    # and no moved line was ever traced. Draining a bounded prefix runs the
+    # body and makes the yields the answer.
+    def counted(n):
+        for i in range(n):
+            yield i * 2
+
+    def endless():
+        i = 0
+        while True:
+            yield i
+            i += 1
+
+    env = {"__builtins__": builtins}
+    out, _ = child_call(types.SimpleNamespace(g=counted), env,
+                        {"kind": "function", "qualname": "g", "n_ctor": 0}, ["3"])
+    assert out["value"] == "[0, 2, 4]", out
+    out, _ = child_call(types.SimpleNamespace(g=endless), env,
+                        {"kind": "function", "qualname": "g", "n_ctor": 0}, [])
+    assert len(ast.literal_eval(out["value"])) == GEN_CAP, "an endless one still stops"
 
     # A producer is keyed by what the parse tree said; a parameter asks by what
     # the interpreter resolved. Two spellings of one type have to meet, or a

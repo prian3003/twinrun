@@ -9,6 +9,7 @@ Output (file at `out`, JSON):
 
 import builtins
 import contextlib
+import itertools
 import importlib
 import inspect
 import importlib.util
@@ -33,6 +34,10 @@ ADDR = re.compile(r"(?<= at 0x)[0-9a-fA-F]+(?=>)")
 # The target file, and the lines in it the commit touched. A probe that calls the
 # changed callable without executing one of these ran the function, not the edit.
 TRACE = {"path": "", "lines": set()}
+
+# How much of a generator to drain. Long enough for a body that yields per
+# item of an argument, short enough that an endless one is not the whole run.
+GEN_CAP = 64
 
 
 def tracer(path: str, lines: set, seen: set):
@@ -195,6 +200,15 @@ def call(mod, env, payload, argsrc):
             if payload.get("is_async"):
                 import asyncio
                 r = asyncio.run(r)
+            if inspect.isgenerator(r):
+                # A generator function returns without running a line of its
+                # own body. The probe compared two <generator object> reprs,
+                # which are equal on every commit, and no moved line was ever
+                # traced -- the callable was reported as one no probe reached
+                # and nothing about it was checked. Drain a bounded prefix
+                # under the same trace: the body runs, the yields are the
+                # answer, and an infinite one still stops.
+                r = list(itertools.islice(r, GEN_CAP))
         val = state_of(r) if kind == "ctor" else safe_repr(r)
         out = result("return", val, type(r).__name__, buf.getvalue())
     except BaseException as e:
