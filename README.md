@@ -311,6 +311,22 @@ twinrun ~/work/api --base main --head my-branch
 CI runs the self-check on 3.10/3.12/3.13, and on every pull request twinrun
 verifies that pull request against its own base branch.
 
+In someone else's repository that is one step. The action checks out the base
+revision itself, since a shallow clone does not have it, and writes the report
+to the job summary:
+
+```yaml
+- uses: actions/checkout@v4
+  with: {fetch-depth: 0}
+- uses: prian3003/twinrun@main
+```
+
+It fails the job on a finding, which is the point of putting it there. A team
+that wants the report without the gate sets `fail-on-finding: false`; a usage
+error still fails either way. The number of findings comes back as the
+`findings` output, and `base`, `head`, `limit` and `timeout` take the flags of
+the same name.
+
 ## Intended changes
 
 Most commits change behaviour on purpose. The old code is the oracle for what

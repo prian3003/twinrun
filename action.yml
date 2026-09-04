@@ -1,0 +1,79 @@
+name: twinrun
+description: Run the old and the new version of changed code on identical inputs, and report where the outputs differ.
+branding:
+  icon: git-commit
+  color: purple
+
+inputs:
+  repo:
+    description: Path to the checked-out repository.
+    default: "."
+  base:
+    description: Revision to treat as the oracle. Defaults to the pull request's base branch.
+    default: ""
+  head:
+    description: Revision under test.
+    default: HEAD
+  limit:
+    description: Max probes per callable.
+    default: "24"
+  timeout:
+    description: Seconds per side per callable.
+    default: "20"
+  fail-on-finding:
+    description: Fail the step when a behaviour change is reported. Set false to report without blocking.
+    default: "true"
+
+outputs:
+  findings:
+    description: Number of findings reported.
+    value: ${{ steps.run.outputs.findings }}
+
+runs:
+  using: composite
+  steps:
+    # The base revision has to exist locally, and a shallow clone does not have
+    # it. Nothing to fetch when the caller already checked out the full history.
+    - name: Fetch the base revision
+      shell: bash
+      run: |
+        cd "${{ inputs.repo }}"
+        if [ -n "$(git rev-parse --is-shallow-repository 2>/dev/null | grep true)" ]; then
+          git fetch --quiet --unshallow || git fetch --quiet --deepen=100 || true
+        fi
+
+    - name: Install twinrun
+      shell: bash
+      run: python3 -m pip install --quiet "${{ github.action_path }}"
+
+    - name: Verify
+      id: run
+      shell: bash
+      run: |
+        base='${{ inputs.base }}'
+        if [ -z "$base" ]; then
+          base="origin/${{ github.base_ref }}"
+          # Not a pull request, so there is no base branch to compare against.
+          [ -n "${{ github.base_ref }}" ] || base="${{ inputs.head }}~1"
+        fi
+        set +e
+        twinrun "${{ inputs.repo }}" --base "$base" --head "${{ inputs.head }}" \
+          --limit "${{ inputs.limit }}" --timeout "${{ inputs.timeout }}" \
+          | tee "$RUNNER_TEMP/twinrun.out"
+        rc=${PIPESTATUS[0]}
+        set -e
+        n=$(sed -n 's/^\([0-9][0-9]*\) finding.*/\1/p' "$RUNNER_TEMP/twinrun.out" | tail -1)
+        echo "findings=${n:-0}" >> "$GITHUB_OUTPUT"
+        {
+          echo "### twinrun"
+          echo
+          echo '```'
+          cat "$RUNNER_TEMP/twinrun.out"
+          echo '```'
+        } >> "$GITHUB_STEP_SUMMARY"
+        # 2 is a usage error and always fails. 1 is a finding, which the caller
+        # may want reported without blocking the merge.
+        if [ "$rc" = 1 ] && [ "${{ inputs.fail-on-finding }}" != "true" ]; then
+          exit 0
+        fi
+        exit $rc
