@@ -220,12 +220,12 @@ Exits 1 when there is a finding, 2 on a usage error, so it drops into CI as-is.
    and nobody else's: the hunk names lines in a file, probing a method builds
    the instance first, and a commit that touches `__init__` alongside a method
    had every method on the class reporting coverage of an edit its own body
-   never ran. Across the 51 non-merge itsdangerous commits since
-   2019 that touch the package — 29 of which leave anything executable to run —
-   3733 of 5269 probes reach it; the rest run the function around the edit. A
-   callable that nothing reached and that produced no delta is reported as
-   skipped rather than counted as checked: 15 of the 42 skips on that sweep,
-   against 199 callables checked. A delta overrides the reach test: a moved
+   never ran. Across the 53 non-merge itsdangerous commits since 2019 that
+   touch the package — 29 of which leave anything executable to run — 3554 of
+   4993 probes reach it; the rest run the function around the edit. A callable
+   that nothing reached and that produced no delta is reported as skipped
+   rather than counted as checked: 12 of the 39 skips on that sweep, against
+   202 callables checked. A delta overrides the reach test: a moved
    default argument or class attribute is evaluated at import, before the trace
    starts, and differs anyway.
 6. **Normalise** — the two revisions are checked out at different paths, so
@@ -256,7 +256,7 @@ Exits 1 when there is a finding, 2 on a usage error, so it drops into CI as-is.
    with each other, and the two sides differ for a reason that has nothing to do
    with the commit. Interleaved, both sides straddle the same window and the
    drift surfaces as a side disagreeing with itself. Two runs of the itsdangerous
-   sweep now report the same 20 findings; before, the count moved between runs.
+   sweep now report the same 19 findings; before, the count moved between runs.
 
    Two runs catch noise with a wide range of outcomes. A target that returns one
    of only a handful of values can still agree with itself by chance — roughly a
@@ -544,7 +544,7 @@ the genuinely hard part: click's world is `Context`, `Command`, `Option` and
 `Parameter`, each wanting another of its own kind, and two levels of
 constructor synthesis is not the whole of it — a third was measured and moved
 that first number by nothing. The same sweep over itsdangerous — a library of
-leaf types — skips 4 and 15. The remaining decorated skips are click's own
+leaf types — skips 4 and 12. The remaining decorated skips are click's own
 example CLIs, where `@click.command` has turned the function into a `Command`.
 
 ## Prior art
