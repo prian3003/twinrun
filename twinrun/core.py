@@ -653,6 +653,15 @@ def _own(node, lines) -> list[int]:
     return [n for n in lines if node.lineno <= n <= end]
 
 
+def _truth_tested(test):
+    """The operands an `if` evaluates for truth rather than comparing."""
+    if isinstance(test, ast.BoolOp):
+        return [x for v in test.values for x in _truth_tested(v)]
+    if isinstance(test, ast.UnaryOp) and isinstance(test.op, ast.Not):
+        return _truth_tested(test.operand)
+    return [test]
+
+
 def _guard_key(n) -> str | None:
     """The probe column a guard names: a bare parameter, or a `self` attribute
     a constructor conventionally sets from one of its own."""
@@ -729,6 +738,17 @@ def _guards(node, lines) -> dict[str, list[str]]:
                     if isinstance(op, ast.In) and isinstance(val, (ast.List, ast.Tuple, ast.Set)) \
                     else [ast.unparse(val)]
                 for v in vals:
+                    if v not in out.setdefault(key, []):
+                        out[key].append(v)
+        # `if self.resolve_path:` names no literal and still says what the
+        # receiver has to have been built with. Both truth values are in the
+        # corpus already; what this does is put them at the front of that
+        # parameter's column, and get it a column at all. Only an attribute:
+        # a bare `if value:` on a parameter the corpus already fills would put
+        # True ahead of the strings it is really about.
+        for c in _truth_tested(n.test):
+            if isinstance(c, ast.Attribute) and (key := _guard_key(c)):
+                for v in ("True", "False"):
                     if v not in out.setdefault(key, []):
                         out[key].append(v)
     return out
@@ -1673,6 +1693,18 @@ def verify(repo, base, head, limit=24, timeout=20.0, seed=0, repeats=2,
                 if params is None or ctor is None:
                     rep.skipped.append((ch.qualname, "signature changed"))
                     continue
+                # A constructor's optional parameters are left at their defaults,
+                # because inventing values for them mostly fails to build
+                # anything at all. One the target's own guards name is the
+                # exception: click's `Path.convert` moved four lines, each behind
+                # an `if self.resolve_path` or `if not self.file_okay`, and the
+                # default is the value that never runs them. Take the list back
+                # as far as that parameter -- a positional call cannot skip the
+                # ones in front of it.
+                full = _agree(bc, hc, required_only=False) or []
+                named = [i for i, (n, _) in enumerate(full) if n in ch.guards]
+                if named:
+                    ctor = full[:max(named[-1] + 1, len(ctor))]
                 ch.params, ch.ctor_params = params, ctor
 
                 resolve_producers(bw, ch, timeout, td)

@@ -134,6 +134,16 @@ def clamp(lo: int, hi: int) -> int:
     return lo
 
 
+class Gauge:
+    def __init__(self, n: int, deep: bool = False):
+        self.n, self.deep = n, deep
+
+    def read(self) -> int:
+        if self.deep:
+            return self.n * 10
+        return self.n
+
+
 class Ticket:
     def __init__(self, tag: str = ""):
         if not tag:
@@ -326,6 +336,16 @@ def shorten(label: str) -> str:                      # renamed, which a position
 
 def clamp(*bounds) -> int:                        # one signature written twice:
     return bounds[1]                              # three positional reach both
+
+
+class Gauge:
+    def __init__(self, n: int, deep: bool = False):
+        self.n, self.deep = n, deep
+
+    def read(self) -> int:
+        if self.deep:                             # `deep` defaults to the value
+            return self.n * 11                    # that never runs this line
+        return self.n
 
 
 class Ticket:                                     # every parameter optional, and
@@ -576,7 +596,7 @@ def main():
     assert "Crate.empty" not in skipped, \
         f"the constructor ran outside the trace: {skipped.get('Crate.empty')!r}"
 
-    assert rep.checked == 29, f"expected 29 callables twin-run, got {rep.checked}"
+    assert rep.checked == 30, f"expected 30 callables twin-run, got {rep.checked}"
     # Nothing builds a Feed, so the receiver has to be the RssFeed the suite
     # constructs. Without that the whole class is skipped for want of an input.
     assert any(d.qualname == "Feed.heading" for d in rep.deltas), \
@@ -587,6 +607,8 @@ def main():
         "a renamed parameter was read as a signature change"
     assert any(d.qualname == "clamp" for d in rep.deltas), \
         "a *args signature was read as a signature change"
+    assert any(d.qualname == "Gauge.read" for d in rep.deltas), \
+        "a moved line behind an optional constructor flag went unreached"
     # @cached_property is @property with the answer kept, and @abstractmethod is
     # a marker: neither is a reason to skip, and Feed.heading below carries one.
     assert any(d.qualname == "Shelf.depth" for d in rep.deltas), \
@@ -728,6 +750,8 @@ class Box:
     # answers differently on both sides and its probe is dropped as flaky.
     scratch = str(Path(tempfile.gettempdir()) / "tmpq1w2e3" / "note.txt")
     assert cap(scratch) == "<tmp>/note.txt", cap(scratch)
+    warn = "<repo>/src/pkg/types.py:744: RuntimeWarning: bool used as a fd"
+    assert cap(warn).startswith("<repo>/src/pkg/types.py:<line>:"), cap(warn)
     assert _values("~V") == _values(""), "an unbound type variable says what Any says"
     assert _values("t.Iterable[~V]")[0] == "[]", _values("t.Iterable[~V]")
 

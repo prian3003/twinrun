@@ -37,6 +37,14 @@ ADDR = re.compile(r"(?<= at 0x)[0-9a-fA-F]+(?=>)")
 # what `CliRunner.isolated_filesystem` does, and what every helper that writes a
 # scratch file does. Only the one segment the interpreter chose is collapsed:
 # what the code put underneath it is still the answer.
+# A warning or a traceback names the line it came from, and any commit that
+# moves code moves that number. `types.py:744: RuntimeWarning: bool is used as
+# a file descriptor` against `types.py:773: RuntimeWarning: ...` is the same
+# warning about the same call, reported as a delta because the lines above it
+# changed. Only a path this repository owns is collapsed -- one printed by the
+# code itself is still the answer.
+LINENO = re.compile(r"(<repo>[^\s:\"']*\.py):\d+")
+
 TMP = re.compile(re.escape(tempfile.gettempdir().rstrip("/")) + r"/[^/\s'\"]+")
 
 # The target file, and the lines in it the commit touched. A probe that calls the
@@ -69,6 +77,7 @@ def cap(s):
         s = s.replace(r, "<repo>")
     s = ADDR.sub("...", s)
     s = TMP.sub("<tmp>", s)
+    s = LINENO.sub(r"\1:<line>", s)
     return s if len(s) <= LIMIT else s[:LIMIT] + f"...<{len(s)} chars total>"
 
 
