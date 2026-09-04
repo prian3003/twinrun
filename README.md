@@ -141,6 +141,20 @@ Exits 1 when there is a finding, 2 on a usage error, so it drops into CI as-is.
    attribute; a `<` names a direction rather than a value, and the corpus
    already carries both ends of the range.
 
+   A branch that tests for truth instead of comparing names no constant at all,
+   and what `if self.resolve_path:` earns is the column rather than what goes
+   in it. A constructor's optional parameters are otherwise left at their
+   defaults, because inventing values for them mostly fails to build anything
+   at all; one the target's own guards name is the exception, and the list is
+   taken back as far as that parameter, since a positional call cannot skip the
+   ones in front of it. click's `Path.convert` moved four lines, each behind an
+   `if self.resolve_path` or an `if not self.file_okay`, and the receiver was
+   built with the default that never runs any of them. Naming a value here
+   would be redundant, and briefly was worse: every modelled type already
+   carries a falsy value beside a truthy one, `''` beside `'a'` and `0` beside
+   `1`, while a literal `True` at the head of a column annotated `str` fails on
+   the first line the branch was guarding.
+
    The literals written on the changed lines go in as well, from both revisions,
    since a commit that removes a line leaves the literal it operated on only in
    base. A guard mines the constant a branch demands; this mines the constant
@@ -208,7 +222,7 @@ Exits 1 when there is a finding, 2 on a usage error, so it drops into CI as-is.
    had every method on the class reporting coverage of an edit its own body
    never ran. Across the 51 non-merge itsdangerous commits since
    2019 that touch the package — 29 of which leave anything executable to run —
-   3759 of 5261 probes reach it; the rest run the function around the edit. A
+   3733 of 5269 probes reach it; the rest run the function around the edit. A
    callable that nothing reached and that produced no delta is reported as
    skipped rather than counted as checked: 15 of the 42 skips on that sweep,
    against 199 callables checked. A delta overrides the reach test: a moved
@@ -224,6 +238,13 @@ Exits 1 when there is a finding, 2 on a usage error, so it drops into CI as-is.
    differently on every run, so its probe was dropped as flaky, and where two
    runs on one side happened to agree it reported a difference that was only the
    name. What the code put underneath the temporary directory survives.
+
+   A line number is collapsed for the same reason. A warning or a traceback
+   names the line it came from, and any commit that moves code moves that
+   number: one `RuntimeWarning` about one call, reported as a difference
+   because base said `types.py:744` and head said `types.py:773`. Only a number
+   attached to a path this repository owns is collapsed; one the code printed
+   itself is still the answer.
 7. **Flake filter** — every probe runs twice per side. If a side disagrees with
    itself the probe is non-deterministic, and it is dropped rather than reported.
    Clocks, RNG, hash ordering and network calls come out here.
@@ -396,9 +417,9 @@ runs it against itsdangerous on every push, so a change here that stops the
 tool catching `f513b48d` fails the build.
 
 What a framework costs is worth stating plainly. Across the 509 click commits
-since 2019 that touch `src/click`, the tool checks 1486 callables and lands
-18292 of 44610 probes on a changed line. It skips 352 callables because it
-could not build an input at all, and 302 because every probe ran without
+since 2019 that touch `src/click`, the tool checks 1491 callables and lands
+18389 of 44674 probes on a changed line. It skips 352 callables because it
+could not build an input at all, and 297 because every probe ran without
 reaching the change. 194 of that first number is one class: a commit
 that touches `Option.__init__` takes the test suite's own constructions away
 from every method on it, and what is left to build one with is the synthesised
