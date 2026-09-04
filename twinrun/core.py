@@ -106,6 +106,7 @@ class Change:
     unknown: list = field(default_factory=list)  # producer calls with no declared type
     skip: str | None = None
     is_async: bool = False          # awaited in the child rather than called
+    caller: bool = False            # pulled in for a change it does not contain
 
     @property
     def instances(self) -> list[str]:
@@ -840,7 +841,8 @@ def changed_functions(repo, base, head, include_tests: bool = False) -> list[Cha
             # A caller is in the radius for a change it does not contain, so it
             # keeps the file's whole set: reaching the helper's edit is the
             # coverage it is here for. Everyone else answers for its own lines.
-            ch.lines = touched if qual in callers else {
+            ch.caller = qual in callers
+            ch.lines = touched if ch.caller else {
                 "base": _own(bt[qual][0], touched["base"]),
                 "head": _own(ht[qual][0], touched["head"])}
             # Both revisions, for the same reason the hints take both: the
@@ -1539,7 +1541,13 @@ def verify(repo, base, head, limit=24, timeout=20.0, seed=0, repeats=2,
                 # or class attribute is evaluated at import, before the trace
                 # starts, and differs without any moved line being stepped on.
                 if kept and not hits and not found and any(ch.lines.values()):
-                    rep.skipped.append((ch.qualname, "no probe reached the change"))
+                    # A caller is a guess -- it is here because it names a
+                    # changed helper, not because the commit touched it -- and
+                    # a guess that does not pay is not a callable the commit
+                    # left unverified. Reporting it says the tool failed at
+                    # something it was never asked to do.
+                    if not ch.caller:
+                        rep.skipped.append((ch.qualname, "no probe reached the change"))
                     continue
 
                 rep.checked += 1
