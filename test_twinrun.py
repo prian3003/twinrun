@@ -19,7 +19,9 @@ from twinrun.core import (_ctor_exprs, _ctor_map, _own, _targets, _typekey, _val
                           cluster, verify, write_verdicts)
 
 BASE = '''
+from abc import abstractmethod
 from contextlib import contextmanager
+from functools import cached_property
 
 
 def discount(price: int, pct: int) -> int:
@@ -138,6 +140,7 @@ class Feed:
     def __init__(self):
         raise NotImplementedError
 
+    @abstractmethod
     def heading(self) -> str:
         return "feed:" + self.tag
 
@@ -181,6 +184,10 @@ class Shelf:
     def load(self) -> int:
         return self.n * 3
 
+    @cached_property
+    def depth(self) -> int:
+        return self.n + 1
+
 
 def strict(v):
     return v + 1                                  # TypeError on a string
@@ -196,7 +203,9 @@ def borrow(n: int):
 '''
 
 HEAD = '''
+from abc import abstractmethod
 from contextlib import contextmanager
+from functools import cached_property
 
 
 def discount(price: int, pct: int) -> int:
@@ -317,6 +326,7 @@ class Feed:                                       # abstract: nothing builds one
     def __init__(self):                           # so the receiver has to be a
         raise NotImplementedError                 # subclass the tests construct
 
+    @abstractmethod
     def heading(self) -> str:
         return "feed/" + self.tag                 # : -> /
 
@@ -359,6 +369,10 @@ class Shelf:
     @property
     def load(self) -> float:
         return self.n * 3.0                       # a property's value changed
+
+    @cached_property
+    def depth(self) -> int:
+        return self.n + 2                         # a property with the answer kept
 
 
 def strict(v):
@@ -546,11 +560,15 @@ def main():
     assert "Crate.empty" not in skipped, \
         f"the constructor ran outside the trace: {skipped.get('Crate.empty')!r}"
 
-    assert rep.checked == 26, f"expected 26 callables twin-run, got {rep.checked}"
+    assert rep.checked == 27, f"expected 27 callables twin-run, got {rep.checked}"
     # Nothing builds a Feed, so the receiver has to be the RssFeed the suite
     # constructs. Without that the whole class is skipped for want of an input.
     assert any(d.qualname == "Feed.heading" for d in rep.deltas), \
         "an abstract receiver went unprobed"
+    # @cached_property is @property with the answer kept, and @abstractmethod is
+    # a marker: neither is a reason to skip, and Feed.heading below carries one.
+    assert any(d.qualname == "Shelf.depth" for d in rep.deltas), \
+        "a cached property went unread"
     # Calling a @contextmanager runs no line of the body, so without entering it
     # the probe compares two identical manager objects and reaches nothing.
     assert any(d.qualname == "borrow" for d in rep.deltas), \

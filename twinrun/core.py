@@ -62,6 +62,14 @@ UNTYPED = ["0", "1", "-1", "''", "'a'", "[]", "{}", "None", "True", "-0.5"]
 
 DECOR_OK = {"staticmethod", "classmethod"}
 
+# Decorators that leave the call alone. @abstractmethod records a name on the
+# class and hands the function straight back, so it is a marker like any other;
+# the abstract class it sits on is built as one of its own subclasses.
+# @cached_property is @property with the answer kept, and the answer is what is
+# being compared.
+DECOR_MARKER = {"abstractmethod"}
+DECOR_PROP = {"property", "cached_property"}
+
 # @contextmanager wraps a generator function. Calling it runs no line of the
 # body and hands back a manager whose repr is the same on every commit, so the
 # callable was skipped as decorated and, where it was not, would have compared
@@ -350,7 +358,7 @@ def _describe(file: str, qualname: str, node, cls_node, base_node, base_cls,
     if isinstance(node, ast.AsyncFunctionDef) and \
             any(isinstance(x, (ast.Yield, ast.YieldFrom)) for x in ast.walk(node)):
         return Change(file, qualname, skip="async generator")
-    decs = _decorators(node) - transparent
+    decs = _decorators(node) - transparent - DECOR_MARKER
 
     if cls_node is None:
         if decs - DECOR_CM:
@@ -382,7 +390,7 @@ def _describe(file: str, qualname: str, node, cls_node, base_node, base_cls,
     # computes is behaviour like any other -- a commit that changes what
     # `cart.total` comes back with is exactly what this tool is for -- and it
     # was the largest single class of skip in the click and jinja sweeps.
-    unknown = decs - DECOR_OK - DECOR_CM - {"property"}
+    unknown = decs - DECOR_OK - DECOR_CM - DECOR_PROP
     if unknown:
         return Change(file, qualname, skip=f"decorated ({', '.join(sorted(unknown))})")
     if _bad_sig(node) or _bad_sig(base_node):
@@ -413,7 +421,7 @@ def _describe(file: str, qualname: str, node, cls_node, base_node, base_cls,
                         len(node.args.defaults))
     if params is None:
         return Change(file, qualname, skip=_sig_msg(base_node, node, True))
-    kind = "property" if "property" in decs else "instance"
+    kind = "property" if decs & DECOR_PROP else "instance"
     return Change(file, qualname, kind=kind, params=params, ctor_params=ctor,
                   is_cm=bool(decs & DECOR_CM))
 
