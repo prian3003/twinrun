@@ -438,6 +438,16 @@ launch a real editor and a real browser twice per side and end in a timeout with
 nothing to show. The network is refused outright. This is a shim, not a sandbox:
 it stops what a probe stumbles into, not code that means to escape.
 
+A file write is recorded the same way and for the same reason. The bytes land
+on disk and the return value says nothing about them, so a commit that changes
+what a function writes changes nothing a comparison can see -- the self-check
+writes `"v1:" + name` on one side and `"v2:" + name` on the other, and
+`write` returns the same count both times. The path and the content go to
+stdout, where they are compared like any other output. Recorded rather than
+stubbed: a function that writes a file and reads it back has to keep working.
+Twenty writes per probe, because the first few already say whether what it
+writes moved.
+
 ## Does it catch real regressions
 
 The question a differential tool has to answer is whether it reports a change

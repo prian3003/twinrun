@@ -54,6 +54,10 @@ TRACE = {"path": "", "lines": set()}
 # How much of a generator to drain. Long enough for a body that yields per
 # item of an argument, short enough that an endless one is not the whole run.
 GEN_CAP = 64
+# Writes recorded per probe. A function that streams a file would otherwise put
+# its whole output in the comparison, and the first few lines already say
+# whether what it writes changed.
+WRITES = 20
 
 
 def tracer(path: str, lines: set, seen: set):
@@ -433,6 +437,34 @@ def neutralise():
         webbrowser.open_new = webbrowser.open_new_tab = webbrowser.open
     except ImportError:
         pass
+
+    # A file write is invisible to an output comparison for the same reason a
+    # shell command was: the bytes land on disk and the return value says
+    # nothing about them. `fh.write("v1:" + name)` and `fh.write("v2:" + name)`
+    # return the same count. Recorded rather than stubbed, because code that
+    # writes a file and reads it back has to keep working, and because the
+    # path is worth seeing even when the content is not.
+    written = [0]
+    real_open = builtins.open
+
+    def opened(file, mode="r", *a, **k):
+        f = real_open(file, mode, *a, **k)
+        if any(c in mode for c in "wxa+"):
+            show("open", cap(str(file)))
+            inner = f.write
+
+            def write(data, _inner=inner):
+                if written[0] < WRITES:
+                    written[0] += 1
+                    show("wrote", cap(data if isinstance(data, str) else repr(data)))
+                return _inner(data)
+            try:
+                f.write = write
+            except (AttributeError, TypeError):
+                pass        # a file object that will not take one is left alone
+        return f
+
+    builtins.open = io.open = opened
 
     def refuse(*a, **k):
         raise OSError("twinrun: the network is not available to a probe")

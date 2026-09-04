@@ -134,6 +134,11 @@ def clamp(lo: int, hi: int) -> int:
     return lo
 
 
+def save(name: str) -> int:
+    with open("out.txt", "w") as fh:
+        return fh.write("v1:" + name)
+
+
 class Gauge:
     def __init__(self, n: int, deep: bool = False):
         self.n, self.deep = n, deep
@@ -336,6 +341,11 @@ def shorten(label: str) -> str:                      # renamed, which a position
 
 def clamp(*bounds) -> int:                        # one signature written twice:
     return bounds[1]                              # three positional reach both
+
+
+def save(name: str) -> int:                       # same length written, so the
+    with open("out.txt", "w") as fh:              # return value sees nothing
+        return fh.write("v2:" + name)
 
 
 class Gauge:
@@ -596,7 +606,7 @@ def main():
     assert "Crate.empty" not in skipped, \
         f"the constructor ran outside the trace: {skipped.get('Crate.empty')!r}"
 
-    assert rep.checked == 30, f"expected 30 callables twin-run, got {rep.checked}"
+    assert rep.checked == 31, f"expected 31 callables twin-run, got {rep.checked}"
     # Nothing builds a Feed, so the receiver has to be the RssFeed the suite
     # constructs. Without that the whole class is skipped for want of an input.
     assert any(d.qualname == "Feed.heading" for d in rep.deltas), \
@@ -609,6 +619,16 @@ def main():
         "a *args signature was read as a signature change"
     assert any(d.qualname == "Gauge.read" for d in rep.deltas), \
         "a moved line behind an optional constructor flag went unreached"
+
+    # What a probe writes to a file is only comparable because it is recorded.
+    # Both sides write the same number of characters, so `fh.write`'s own return
+    # value says nothing and the bytes are the entire difference.
+    wrote = next((d for d in rep.deltas if d.qualname == "save"), None)
+    assert wrote is not None, "a changed file write went unseen"
+    assert wrote.base["value"] == wrote.head["value"], \
+        f"this fixture is meant to differ only in what it wrote: {wrote}"
+    assert "v1:" in wrote.base["stdout"] and "v2:" in wrote.head["stdout"], \
+        f"the write itself was not recorded: {wrote}"
     # @cached_property is @property with the answer kept, and @abstractmethod is
     # a marker: neither is a reason to skip, and Feed.heading below carries one.
     assert any(d.qualname == "Shelf.depth" for d in rep.deltas), \
