@@ -19,12 +19,15 @@ import ast
 import hashlib
 import json
 import os
+import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
 
-URL = "https://api.anthropic.com/v1/messages"
-MODEL = os.environ.get("TWINRUN_MODEL", "claude-sonnet-5")
+ANTHROPIC = "https://api.anthropic.com/v1/messages"
+OPENAI = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1") + \
+    "/chat/completions"
+DEFAULT_MODEL = {"anthropic": "claude-sonnet-5", "openai": "gpt-4o-mini"}
 # Calls per run. A sweep is hundreds of commits and the ceiling is what keeps a
 # measurement affordable; a single commit never comes near it.
 BUDGET = 40
@@ -34,8 +37,29 @@ TIMEOUT = 30
 _spent = [0]
 
 
+def _debug(msg: str) -> None:
+    # A run that silently asks for nothing looks exactly like a run with a bad
+    # key, and the difference matters the first time anyone turns this on.
+    if os.environ.get("TWINRUN_DEBUG"):
+        print(f"[twinrun.llm] {msg}", file=sys.stderr)
+
+
+def provider() -> str | None:
+    """Whichever key is present. Anthropic first, and only because it has to be
+    one of them; nothing here depends on which."""
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        return "anthropic"
+    if os.environ.get("OPENAI_API_KEY"):
+        return "openai"
+    return None
+
+
+def model() -> str:
+    return os.environ.get("TWINRUN_MODEL") or DEFAULT_MODEL[provider() or "anthropic"]
+
+
 def available() -> bool:
-    return bool(os.environ.get("ANTHROPIC_API_KEY"))
+    return provider() is not None
 
 
 def _cache_dir() -> Path:
@@ -46,22 +70,58 @@ def _cache_dir() -> Path:
 
 
 def _post(prompt: str) -> str | None:
-    body = json.dumps({
-        "model": MODEL,
-        "max_tokens": 1024,
-        "messages": [{"role": "user", "content": prompt}],
-    }).encode()
-    req = urllib.request.Request(URL, data=body, headers={
-        "content-type": "application/json",
-        "anthropic-version": "2023-06-01",
-        "x-api-key": os.environ["ANTHROPIC_API_KEY"],
-    })
+    """The completion, or None if the provider would not give one.
+
+    Two providers because a key is a key: the model is being asked for Python
+    expressions, which is not a question either of them answers differently
+    enough to matter, and refusing to run because the key in the environment
+    says openai would be a silly reason not to measure anything.
+    """
+    who = provider()
+    if who is None:
+        return None
+    msg = [{"role": "user", "content": prompt}]
+    if who == "anthropic":
+        url = ANTHROPIC
+        headers = {"anthropic-version": "2023-06-01",
+                   "x-api-key": os.environ["ANTHROPIC_API_KEY"]}
+        body = {"model": model(), "max_tokens": 1024, "messages": msg}
+    else:
+        url = OPENAI
+        headers = {"authorization": "Bearer " + os.environ["OPENAI_API_KEY"]}
+        body = {"model": model(), "max_tokens": 1024, "messages": msg}
+
+    for attempt in range(2):
+        req = urllib.request.Request(
+            url, data=json.dumps(body).encode(),
+            headers={"content-type": "application/json", **headers})
+        try:
+            with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+                data = json.load(r)
+            break
+        except urllib.error.HTTPError as e:
+            detail = e.read()[:500].decode("utf-8", "replace")
+            # Newer OpenAI models refuse max_tokens and name their replacement
+            # in the error, so take them at their word rather than carrying a
+            # table of which models want which spelling.
+            if attempt == 0 and "max_completion_tokens" in detail:
+                body["max_completion_tokens"] = body.pop("max_tokens")
+                continue
+            _debug(f"{e.code} {detail}")
+            return None
+        except (urllib.error.URLError, TimeoutError, ValueError, OSError) as e:
+            _debug(f"{type(e).__name__}: {e}")
+            return None
+    else:
+        return None
+
+    if who == "anthropic":
+        return "".join(b.get("text", "") for b in data.get("content", []))
     try:
-        with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
-            data = json.load(r)
-    except (urllib.error.URLError, TimeoutError, ValueError, OSError):
-        return None     # no inputs is what the caller already had; it stays there
-    return "".join(b.get("text", "") for b in data.get("content", []))
+        return data["choices"][0]["message"]["content"] or ""
+    except (KeyError, IndexError, TypeError):
+        _debug(f"unexpected response: {json.dumps(data)[:300]}")
+        return None
 
 
 def _source(root: Path, file: str, qualname: str, lines: set) -> str | None:
@@ -137,7 +197,7 @@ def propose(root: Path, ch, params: list) -> dict:
         params="\n".join(f"- {n}: {a or 'no annotation'}" for n, a in params))
 
     key = _cache_dir() / (hashlib.sha256(
-        (MODEL + prompt).encode()).hexdigest()[:32] + ".json")
+        (model() + prompt).encode()).hexdigest()[:32] + ".json")
     try:
         return json.loads(key.read_text())
     except (OSError, ValueError):

@@ -419,9 +419,11 @@ sides, held to the same flake and contract filters. A wrong one is a probe that
 raises identically on both sides, which a run already tolerates by the
 thousand.
 
-It is off by default, needs `ANTHROPIC_API_KEY`, and is asked only after
-everything free has failed, so a run that builds its own inputs never pays for
-it. **The gain is not yet measured.** Every other synthesis idea here was A/B'd
+It is off by default, needs `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`, and is
+asked only after everything free has failed, so a run that builds its own inputs
+never pays for it. `TWINRUN_MODEL` picks the model and `TWINRUN_DEBUG=1` prints
+why a request came back with nothing, which is the difference between a bad key
+and a callable nothing could be suggested for. **The gain is not yet measured.** Every other synthesis idea here was A/B'd
 on a real sweep before being kept, and two were reverted for measuring at zero;
 this one has a harness and no number yet, and should be read as unproven until
 it has one.

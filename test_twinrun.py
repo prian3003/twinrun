@@ -959,6 +959,7 @@ def llm_gate():
             with tempfile.TemporaryDirectory() as cache:
                 os.environ["TWINRUN_CACHE"] = cache
                 os.environ.setdefault("ANTHROPIC_API_KEY", "test")
+                assert llm.provider() and llm.model(), "no provider was selected"
                 on = verify(repo, "HEAD~1", "HEAD", limit=8, use_llm=True)
         finally:
             llm._post = real
