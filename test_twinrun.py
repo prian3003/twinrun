@@ -11,7 +11,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from twinrun._child import Sibling
-from twinrun.core import _ctor_exprs, _typekey, _values, cluster, verify, write_verdicts
+from twinrun.core import (_ctor_exprs, _ctor_map, _typekey, _values, cluster, verify,
+                          write_verdicts)
 
 BASE = '''
 def discount(price: int, pct: int) -> int:
@@ -524,6 +525,28 @@ def main():
         raise AssertionError("an absent name has to stay absent")
     except KeyError:
         pass
+
+    # A class takes its __init__ from the ancestor that defines it, and that is
+    # the only constructor whose change can invalidate the constructions the
+    # test suite performs for it. The disqualifying test used to ask `moved` for
+    # a bare "__init__", and `moved` carries the tail of every changed method
+    # alongside its qualified name -- so one touched constructor anywhere took
+    # the harvested constructions away from every class in the package.
+    owners = {}
+    _ctor_map(["""
+class Signer:
+    def __init__(self, key): pass
+class Timed(Signer): pass
+class Other:
+    def __init__(self, n): pass
+"""], owners)
+    assert owners["Signer"] == "Signer", owners
+    assert owners["Timed"] == "Signer", "an inherited __init__ names its definer"
+    assert owners["Other"] == "Other", owners
+    moved = {"Signer.__init__", "__init__"}
+    kept = [c for c in ("Signer", "Timed", "Other")
+            if f"{owners.get(c, c)}.__init__" not in moved]
+    assert kept == ["Other"], f"the wrong classes were disqualified: {kept}"
 
     # A producer is keyed by what the parse tree said; a parameter asks by what
     # the interpreter resolved. Two spellings of one type have to meet, or a

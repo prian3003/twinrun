@@ -179,11 +179,15 @@ def _targets(src: str) -> dict[str, tuple]:
     return out
 
 
-def _ctor_map(srcs) -> dict[str, list]:
+def _ctor_map(srcs, owners: dict | None = None) -> dict[str, list]:
     """Constructor parameters for every class in a package, with an inherited
     __init__ resolved to the base class that defines it. TimestampSigner takes
     its constructor from Signer in another module; without this it is built
-    with no arguments at all, and every probe dies in setup."""
+    with no arguments at all, and every probe dies in setup.
+
+    `owners`, if given, is filled with the class each name took its __init__
+    from -- itself, or the ancestor the walk below landed on. The caller needs
+    it to tell whose constructor a commit actually changed."""
     own, bases = {}, {}
     for src in srcs:
         try:
@@ -199,6 +203,8 @@ def _ctor_map(srcs) -> dict[str, list]:
             if init is not None:
                 own[n.name] = None if _bad_sig(init) else [
                     (name, _expand(ann, al)) for name, ann in _sig_params(init, True)]
+                if owners is not None:
+                    owners[n.name] = n.name
     out = dict(own)
     for cls in bases:
         cur, seen = cls, set()
@@ -209,6 +215,8 @@ def _ctor_map(srcs) -> dict[str, list]:
                 break
             if cur in own:
                 out[cls] = own[cur]
+                if owners is not None:
+                    owners[cls] = cur
     return {k: v for k, v in out.items() if v is not None}
 
 
@@ -739,7 +747,8 @@ def changed_functions(repo, base, head, include_tests: bool = False) -> list[Cha
         # consumes its type -- a false positive machine. Anything present in
         # base and absent from `moved` is identical in both.
         sibs = _siblings(repo, base, f, tree_cache)
-        ctors = _ctor_map([b] + [x for x in sibs if x != b])
+        owners: dict[str, str] = {}
+        ctors = _ctor_map([b] + [x for x in sibs if x != b], owners)
 
         # Extracting a helper leaves its callers byte-identical while their
         # behaviour moves underneath them. Probe one level of those too: the
@@ -829,11 +838,16 @@ def changed_functions(repo, base, head, include_tests: bool = False) -> list[Cha
                  if x not in _hints(ht[qual][0], touched["head"])]
             ch.risky = risky
             ch.unknown = seek
-            # A changed constructor anywhere disqualifies every harvested
-            # construction: __init__ is resolved through inheritance, so the
-            # one that moved is not always the one named on the class.
+            # A changed constructor disqualifies the harvested constructions
+            # of the classes that inherit it: __init__ is resolved through the
+            # bases, so the one that moved is not always the one named on the
+            # class. It disqualifies nothing else. `moved` holds the bare tail
+            # of every changed method as well as its qualified name, so asking
+            # it for "__init__" was asking whether any constructor in the whole
+            # commit had changed -- and a commit that touches one takes the test
+            # suite's constructions away from every class in the package.
             cls = qual.split(".")[0] if "." in qual else ""
-            if cls and "__init__" not in moved:
+            if cls and f"{owners.get(cls, cls)}.__init__" not in moved:
                 ch.built = list(tcalls.get(cls, []))
             out.append(ch)
     return out
