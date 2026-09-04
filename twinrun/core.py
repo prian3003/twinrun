@@ -741,16 +741,16 @@ def _guards(node, lines) -> dict[str, list[str]]:
                     if v not in out.setdefault(key, []):
                         out[key].append(v)
         # `if self.resolve_path:` names no literal and still says what the
-        # receiver has to have been built with. Both truth values are in the
-        # corpus already; what this does is put them at the front of that
-        # parameter's column, and get it a column at all. Only an attribute:
-        # a bare `if value:` on a parameter the corpus already fills would put
-        # True ahead of the strings it is really about.
+        # receiver has to have been built with. The key on its own is the whole
+        # point: it earns that parameter a column. The values it might carry are
+        # already there, because every modelled type holds a falsy value and a
+        # truthy one -- `''` beside `'a'`, `0` beside `1`, `[]` beside `[1]` --
+        # so the column answers its own truth test. Naming `True` and `False`
+        # here instead put a bool at the head of a column annotated `str`, where
+        # it fails on the first line the branch was guarding.
         for c in _truth_tested(n.test):
             if isinstance(c, ast.Attribute) and (key := _guard_key(c)):
-                for v in ("True", "False"):
-                    if v not in out.setdefault(key, []):
-                        out[key].append(v)
+                out.setdefault(key, [])
     return out
 
 
