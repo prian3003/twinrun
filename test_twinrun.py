@@ -864,6 +864,57 @@ def stored_invariant_gate():
           f"that the diff passed; {second.rechecked} re-checked")
 
 
+def mcp_gate():
+    """The MCP server answers a real handshake and returns a real finding.
+
+    Driven through handle() rather than a subprocess, because what is worth
+    checking is the dispatch and the shape of what comes back, and a pipe would
+    only add a way for the test to hang.
+    """
+    from twinrun.mcp import TOOL, handle
+
+    hello = handle({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                    "params": {"protocolVersion": "2024-11-05"}})
+    assert hello["result"]["protocolVersion"] == "2024-11-05", \
+        f"a client's protocol version was not echoed back: {hello}"
+    assert handle({"jsonrpc": "2.0", "method": "notifications/initialized"}) is None, \
+        "a notification was answered, which desynchronises the stream"
+    names = [t["name"] for t in
+             handle({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})["result"]["tools"]]
+    assert names == [TOOL["name"]], names
+
+    with tempfile.TemporaryDirectory() as td:
+        repo = Path(td) / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", "-b", "main", str(repo)],
+                       check=True, capture_output=True)
+        git(repo, "config", "user.email", "dev@example.com")
+        git(repo, "config", "user.name", "dev")
+        (repo / "m.py").write_text("def double(x: int) -> int:\n    return x * 2\n")
+        git(repo, "add", "-A")
+        git(repo, "commit", "-qm", "double")
+        (repo / "m.py").write_text("def double(x: int) -> int:\n    return x * 3\n")
+        git(repo, "add", "-A")
+        git(repo, "commit", "-qm", "triple, which is not doubling")
+
+        out = handle({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+                      "params": {"name": "verify",
+                                 "arguments": {"repo": str(repo), "limit": 8}}})["result"]
+        bad = handle({"jsonrpc": "2.0", "id": 4, "method": "tools/call",
+                      "params": {"name": "verify",
+                                 "arguments": {"repo": str(repo), "base": "nope"}}})["result"]
+
+    found = out["structuredContent"]["findings"]
+    assert [f["qualname"] for f in found] == ["double"], found
+    assert found[0]["base"] != found[0]["head"], found
+    assert "DELTA" in out["content"][0]["text"], out["content"][0]["text"]
+    # A bad revision is the caller's to fix, so it has to come back readable.
+    assert bad.get("isError") and "twinrun:" in bad["content"][0]["text"], bad
+    print(f"ok  the mcp server reported {found[0]['call']} "
+          f"{found[0]['base']} -> {found[0]['head']}")
+
+
 if __name__ == "__main__":
     main()
     stored_invariant_gate()
+    mcp_gate()

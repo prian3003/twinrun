@@ -23,6 +23,7 @@ Source = "https://github.com/prian3003/twinrun"
 
 [project.scripts]
 twinrun = "twinrun.cli:main"
+twinrun-mcp = "twinrun.mcp:serve"
 
 [build-system]
 requires = ["setuptools>=77"]

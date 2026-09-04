@@ -327,6 +327,23 @@ error still fails either way. The number of findings comes back as the
 `findings` output, and `base`, `head`, `limit` and `timeout` take the flags of
 the same name.
 
+The other place it belongs is next to whatever wrote the change. An agent
+finishing an edit has the reviewer's problem and less to go on: it knows what
+it meant to change and nothing about what else moved. `twinrun-mcp` is the same
+verify behind an MCP tool, so it can ask.
+
+```json
+"mcpServers": {"twinrun": {"command": "twinrun-mcp"}}
+```
+
+It speaks the protocol on stdin and stdout with no package behind it, for the
+reason the rest of the tool has none: twinrun imports the code it is measuring,
+and a dependency it carries is one that can collide with the repository under
+test. One tool is exposed, `verify`, returning the report a person reads and
+the same answer as data. `--accept` is deliberately not exposed. A verdict is a
+person saying a change was meant, and an agent blessing its own findings would
+write the regression down as the answer.
+
 ## Intended changes
 
 Most commits change behaviour on purpose. The old code is the oracle for what
