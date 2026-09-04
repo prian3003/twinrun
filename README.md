@@ -402,8 +402,8 @@ passed over rather than reported.
 ### Asking for an input twinrun cannot build
 
 Every value it probes with comes from an annotation, a guard literal, or a
-construction lifted out of the test suite, and on click that leaves 648
-callables unprobed: 352 where nothing could be built at all, and 296 where
+construction lifted out of the test suite, and on click that leaves 650
+callables unprobed: 352 where nothing could be built at all, and 298 where
 something was built and no probe ran a line the commit moved. Both are one
 failure -- a type the corpus does not model, or a value too specific to guess
 -- and it is the largest single thing standing between the tool and the rest of
@@ -423,10 +423,18 @@ It is off by default, needs `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`, and is
 asked only after everything free has failed, so a run that builds its own inputs
 never pays for it. `TWINRUN_MODEL` picks the model and `TWINRUN_DEBUG=1` prints
 why a request came back with nothing, which is the difference between a bad key
-and a callable nothing could be suggested for. **The gain is not yet measured.** Every other synthesis idea here was A/B'd
-on a real sweep before being kept, and two were reverted for measuring at zero;
-this one has a harness and no number yet, and should be read as unproven until
-it has one.
+and a callable nothing could be suggested for.
+
+Measured the way everything else here was, on 40 click commits with each arm run
+from cold: 170 callables checked becomes 181, 152 skips become 138, and 28
+findings become 30. It asked on 17 callables and 11 of the 40 commits gained
+something. The two new findings are both real, and one of them is the case this
+section opened with -- `Option.__init__` on `8f300853`, where `default=False`
+with `flag_value=True` leaves `is_bool_flag` off the instance on one side. That
+is the class the table below gives up on, and a `param_decls=['--bar']` was the
+whole of what the corpus was missing. A gain of two findings on forty commits is
+real and small; it buys the callables nothing else can reach, not a better
+answer on the ones already reached.
 
 ## What it covers
 
@@ -523,9 +531,9 @@ runs it against itsdangerous on every push, so a change here that stops the
 tool catching `f513b48d` fails the build.
 
 What a framework costs is worth stating plainly. Across the 509 click commits
-since 2019 that touch `src/click`, the tool checks 1492 callables and lands
+since 2019 that touch `src/click`, the tool checks 1490 callables and lands
 18393 of 44678 probes on a changed line. It skips 352 callables because it
-could not build an input at all, and 296 because every probe ran without
+could not build an input at all, and 298 because every probe ran without
 reaching the change. 194 of that first number is one class: a commit
 that touches `Option.__init__` takes the test suite's own constructions away
 from every method on it, and what is left to build one with is the synthesised
