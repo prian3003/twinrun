@@ -564,6 +564,20 @@ def _hunks(repo, base, head, f: str) -> dict[str, list[int]]:
     return out
 
 
+def _own(node, lines) -> list[int]:
+    """The moved lines that lie inside one callable.
+
+    A hunk is read off the file, so every callable in it was handed the whole
+    file's moved lines and counted a probe as coverage for running any of them.
+    Probing a method builds the instance first, and a commit that touches
+    `__init__` alongside a method therefore had every method on the class
+    reporting that it reached a change it never executed. Ask each callable for
+    its own lines instead.
+    """
+    end = node.end_lineno or node.lineno
+    return [n for n in lines if node.lineno <= n <= end]
+
+
 def _guard_key(n) -> str | None:
     """The probe column a guard names: a bare parameter, or a `self` attribute
     a constructor conventionally sets from one of its own."""
@@ -822,7 +836,13 @@ def changed_functions(repo, base, head, include_tests: bool = False) -> list[Cha
         for qual in hit + callers:
             ch = _describe(f, qual, *ht[qual], *bt[qual], transparent=clear)
             ch.is_async = isinstance(ht[qual][0], ast.AsyncFunctionDef)
-            ch.ctors, ch.producers, ch.lines = ctors, made, touched
+            ch.ctors, ch.producers = ctors, made
+            # A caller is in the radius for a change it does not contain, so it
+            # keeps the file's whole set: reaching the helper's edit is the
+            # coverage it is here for. Everyone else answers for its own lines.
+            ch.lines = touched if qual in callers else {
+                "base": _own(bt[qual][0], touched["base"]),
+                "head": _own(ht[qual][0], touched["head"])}
             # Both revisions, for the same reason the hints take both: the
             # branch standing in front of a removed line is in base, and
             # reaching the edit on either side is coverage of it.

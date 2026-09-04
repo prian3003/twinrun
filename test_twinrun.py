@@ -11,8 +11,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from twinrun._child import Sibling
-from twinrun.core import (_ctor_exprs, _ctor_map, _typekey, _values, cluster, verify,
-                          write_verdicts)
+from twinrun.core import (_ctor_exprs, _ctor_map, _own, _targets, _typekey, _values,
+                          cluster, verify, write_verdicts)
 
 BASE = '''
 def discount(price: int, pct: int) -> int:
@@ -547,6 +547,22 @@ class Other:
     kept = [c for c in ("Signer", "Timed", "Other")
             if f"{owners.get(c, c)}.__init__" not in moved]
     assert kept == ["Other"], f"the wrong classes were disqualified: {kept}"
+
+    # A hunk names lines in a file, and a callable is asked whether a probe ran
+    # one of its own. Probing a method builds the instance first, so a commit
+    # that touches __init__ alongside a method had every method on the class
+    # reporting coverage of a change its own body never executed.
+    src = """
+class Box:
+    def __init__(self, n):
+        self.n = n
+    def size(self):
+        return self.n
+"""
+    t = _targets(src)
+    lines = list(range(1, 7))
+    assert _own(t["Box.__init__"][0], lines) == [3, 4], _own(t["Box.__init__"][0], lines)
+    assert _own(t["Box.size"][0], lines) == [5, 6], _own(t["Box.size"][0], lines)
 
     # A producer is keyed by what the parse tree said; a parameter asks by what
     # the interpreter resolved. Two spellings of one type have to meet, or a
