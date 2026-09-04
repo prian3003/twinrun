@@ -612,6 +612,17 @@ def main():
     assert _values("cabc.Iterable[V] | None")[0] == "[]", \
         f"a container resolved to its type argument: {_values('cabc.Iterable[V] | None')}"
 
+    # A container of a type the corpus does model is filled from that type,
+    # test-suite literals first: `Option(['a', 'b'])` raises before click's own
+    # constructor starts, and `['--flag-one']` does not.
+    seq = _values("cabc.Sequence[str] | None", producers={"str": ["'--flag-one'"]})
+    assert seq[:2] == ["['--flag-one']", "['']"], f"element type unused: {seq}"
+    # An annotation nothing models still says whether None is allowed, and for
+    # click's `type: ParamType | Any | None` that is the value every real call
+    # passes.
+    assert _values("ParamType | t.Any | None")[0] == "None", \
+        f"an optional the corpus cannot model lost its None: {_values('ParamType | t.Any | None')}"
+
     # A str column drops a hint the corpus already holds; an Any column keeps
     # every one. So the two fall out of step, and click's zsh formatter -- which
     # escapes a colon in the value if and only if the help is not the sentinel

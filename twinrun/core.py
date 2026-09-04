@@ -1245,6 +1245,41 @@ def _made(ann: str, producers: dict | None, limit: int = 4) -> list[str]:
 GUESSED = 3         # producer values offered per type to an unannotated parameter
 
 
+# How a container of one element type is written out. The element type is the
+# half of `Sequence[str]` that says anything: filled from the list corpus the
+# parameter gets `['a', 'b']`, which reaches the first line of whatever
+# validates the contents and no further. click's `Option(['a', 'b'])` raises
+# inside the base constructor, which is why no probe reached any of the
+# twenty-six commits that touched `Option.__init__`. Wrapping what the element
+# type is worth here -- the test suite's own strings first -- gets one past.
+SEQ = {"list": "[%s]", "sequence": "[%s]", "iterable": "[%s]",
+       "iterator": "iter([%s])", "tuple": "(%s,)", "set": "{%s}",
+       "frozenset": "frozenset({%s})"}
+CONTAINER = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\[(.+)\]")
+VAGUE = {"any", "object"}   # in the corpus, but naming no type
+
+
+def _element(ann: str) -> tuple[str, str] | None:
+    """(how to write the container, what it holds), for a container of one
+    modelled type. A mapping holds two things and a `tuple[int, str]` is a
+    record rather than a sequence; neither is filled this way."""
+    bare = QUALIFIER.sub("", ann).replace("| None", "").strip()
+    m = CONTAINER.fullmatch(bare)
+    if not m:
+        return None
+    name, inner = m.group(1), re.sub(r",\s*\.\.\.$", "", m.group(2)).strip()
+    if name in ("Optional", "Union"):    # Optional[Sequence[str]] is one of these
+        return _element(inner)
+    if "," in inner or name.lower() not in SEQ:
+        return None
+    # A modelled element type only. `Iterable[Any]` says no more than `Iterable`
+    # does, and the container's own corpus already answers it; wrapping the
+    # untyped spread instead just spends the column on `[0]`.
+    held = re.findall(r"[A-Za-z_][A-Za-z0-9_]*", QUALIFIER.sub("", inner))
+    return (SEQ[name.lower()], inner) if any(
+        n.lower() in CORPUS and n.lower() not in VAGUE for n in held) else None
+
+
 def _values(ann: str, ctors: dict | None = None,
             producers: dict | None = None, depth: int = CTOR_DEPTH,
             aliases: dict | None = None, calls: dict | None = None,
@@ -1285,14 +1320,31 @@ def _values(ann: str, ctors: dict | None = None,
             names = rest
         else:
             # a type that says nothing gets the spread, and whatever the moved
-            # line was written to operate on
-            return list(hints or []) + UNTYPED
+            # line was written to operate on -- but None first if the annotation
+            # admits it. `ParamType | Any | None` models nothing the corpus has,
+            # so click's `type` parameter was probed with `0` and `'a'` and
+            # raised on `__name__` every time, while the value every real call
+            # passes is the None the annotation is already declaring.
+            spread = list(hints or []) + UNTYPED
+            return ["None"] + [v for v in spread if v != "None"] \
+                if optional else spread
     made = _made(ann, producers)
+    held = []
+    if depth > 0 and (el := _element(ann)) is not None:
+        wrap, inner = el
+        # The repository's own literals go in ahead of the corpus: a container
+        # is usually validated by what it holds, and the corpus does not guess
+        # a value a validator accepts.
+        for v in _made(inner, producers, 2) + (_values(
+                inner, ctors, producers, depth - 1, aliases, calls, hints) or []):
+            if (w := wrap % v) not in held:
+                held.append(w)
+        held = held[:4]
     for n in names:
         if n.lower() in CORPUS:
             lead = [h for h in (hints or [])
                     if n.lower() in ("str", "bytes") and h not in CORPUS[n.lower()]]
-            vals = lead + list(CORPUS[n.lower()]) + made
+            vals = held + lead + list(CORPUS[n.lower()]) + made
             return vals + ["None"] if optional else vals
     real = [n for n in names if n not in TYPING]
     if not real:
