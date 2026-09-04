@@ -1534,6 +1534,22 @@ def verify(repo, base, head, limit=24, timeout=20.0, seed=0, repeats=2,
                     continue
 
                 res, err = _sweep(ch, probes, bw, hw, repeats, timeout, td)
+                if res is None and "no usable inputs" in err:
+                    # A constructor is called only to get an instance, so its
+                    # optional parameters are left at their defaults -- and a
+                    # class that cannot be built from its defaults is saying
+                    # one of them is not really optional. click answers
+                    # `Option()` with "Could not determine name for option",
+                    # and every method on it was reported as one no input
+                    # could be built for. Spend the second sweep only here,
+                    # where the alternative is reporting nothing.
+                    full = _agree(bc, hc, required_only=False)
+                    if full and full != ctor:
+                        ch.ctor_params = full
+                        retry, _ = make_probes(ch, limit, seed)
+                        if retry:
+                            res, err = _sweep(ch, retry, bw, hw, repeats,
+                                              timeout, td)
                 if res is None:
                     rep.skipped.append((ch.qualname, err))
                     continue

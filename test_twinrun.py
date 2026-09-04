@@ -121,6 +121,16 @@ def scale(x: int) -> int:
     return x * 2
 
 
+class Ticket:
+    def __init__(self, tag: str = ""):
+        if not tag:
+            raise ValueError("a ticket needs a tag")
+        self.tag = tag
+
+    def label(self) -> str:
+        return self.tag.upper()
+
+
 class Cart:
     def __init__(self, rate: int):
         self.rate = rate
@@ -267,6 +277,16 @@ def area(w: int, h: int = 2) -> int:              # appended an optional paramet
 
 def scale(x: int, factor: int) -> int:            # appended a required parameter
     return x * factor
+
+
+class Ticket:                                     # every parameter optional, and
+    def __init__(self, tag: str = ""):            # Ticket() raises all the same:
+        if not tag:                               # the receiver has to be built
+            raise ValueError("a ticket needs a tag")   # from an optional one
+        self.tag = tag
+
+    def label(self) -> str:
+        return self.tag.title()                   # UPPER -> Title
 
 
 class Cart:
@@ -480,7 +500,12 @@ def main():
     assert "Crate.empty" not in skipped, \
         f"the constructor ran outside the trace: {skipped.get('Crate.empty')!r}"
 
-    assert rep.checked == 23, f"expected 23 callables twin-run, got {rep.checked}"
+    assert rep.checked == 24, f"expected 24 callables twin-run, got {rep.checked}"
+    # Ticket() raises, so the receiver has to be built from a parameter that
+    # carries a default. Without the retry the whole class is skipped for want
+    # of an input and its changed label() is never compared.
+    assert any(d.qualname == "Ticket.label" for d in rep.deltas), \
+        "a receiver built only from optional parameters went unprobed"
 
     # `Any` inside a subscript is a type argument, not the type: a dict whose
     # values are Any is still a dict, and a file annotated IO[Any] is still a
