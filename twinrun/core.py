@@ -124,7 +124,6 @@ class Change:
     skip: str | None = None
     is_async: bool = False          # awaited in the child rather than called
     caller: bool = False            # pulled in for a change it does not contain
-    ctor_changed: bool = False      # the receiver's own __init__ is in the radius
     is_cm: bool = False             # entered in the child rather than compared
 
     @property
@@ -963,31 +962,17 @@ def changed_functions(repo, base, head, include_tests: bool = False) -> list[Cha
                  if x not in _hints(ht[qual][0], touched["head"])]
             ch.risky = risky
             ch.unknown = seek
-            # Whether this class's own constructor moved. __init__ is resolved
-            # through the bases, so the one that moved is not always the one
-            # named on the class, and `moved` holds the bare tail of every
-            # changed method as well as its qualified name -- asking it for
-            # "__init__" was asking whether any constructor in the whole commit
-            # had changed, which took the test suite's constructions away from
-            # every class in the package.
+            # A changed constructor is not a reason to take a method's
+            # constructions away. The radius holds the methods this commit
+            # touched, so a moved __init__ reaches only the ones that moved with
+            # it -- it cannot report an attribute rename once per method,
+            # because the methods it did not touch are never probed. Measured on
+            # the 41 click commits where the class's own __init__ moved: 592
+            # callables checked becomes 701, 247 unbuildable becomes 104, and
+            # the two findings it adds are both real.
             cls = qual.split(".")[0] if "." in qual else ""
-            if cls and f"{owners.get(cls, cls)}.__init__" not in moved:
+            if cls:
                 ch.built = list(tcalls.get(cls, []))
-            elif cls and not qual.endswith(".__init__"):
-                # A changed constructor is not a reason to take a method's
-                # constructions away. The radius holds the methods this commit
-                # touched, so a moved __init__ reaches only the ones that moved
-                # too -- it cannot report an attribute rename once per method,
-                # because the methods it did not touch are not probed. Measured
-                # on the 41 click commits that hit this rule: 592 callables
-                # checked becomes 701, 247 unbuildable becomes 104, and the two
-                # findings it adds are both real.
-                ch.ctor_changed = True
-                ch.built = list(tcalls.get(cls, []))
-            elif cls:
-                # __init__ itself is the exception: the construction under test
-                # cannot also be the thing that builds the receiver.
-                ch.ctor_changed = True
             if cls and not ch.built:
                 # Nothing builds an abstract base. Take a construction of one of
                 # its subclasses: the method under test is the one it inherits,
@@ -1817,13 +1802,6 @@ def verify(repo, base, head, limit=24, timeout=20.0, seed=0, repeats=2,
                     if rescued:
                         res, rep.asked = rescued, rep.asked + 1
                 if res is None:
-                    if ch.ctor_changed and "no usable inputs" in err:
-                        # The synthesised construction failed, and the reason the
-                        # test suite's own constructions were not there to fall
-                        # back on is the commit itself. Two thirds of click's
-                        # skips of this kind are one class whose __init__ moved.
-                        err += (f": {ch.qualname.split('.')[0]}.__init__ changed, so "
-                                "its own tests' constructions were set aside")
                     rep.skipped.append((ch.qualname, err))
                     continue
 
