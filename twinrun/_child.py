@@ -294,6 +294,9 @@ def _ann(a):
     return str(a)
 
 
+STAR = "*"          # stands in for a `*args` in a parameter list
+
+
 def _params_of(fn, drop_first):
     try:
         sig = inspect.signature(fn, eval_str=True)
@@ -306,8 +309,14 @@ def _params_of(fn, drop_first):
     for i, (name, p) in enumerate(sig.parameters.items()):
         if drop_first and i == 0:
             continue
-        if p.kind in (p.VAR_POSITIONAL, p.VAR_KEYWORD):
-            continue                    # nothing has to be passed for these
+        if p.kind is p.VAR_POSITIONAL:
+            # Nothing has to be passed for it, but anything may: a `*args` on
+            # one side accepts whatever the other side names. Recorded under a
+            # name no parameter can have, and read off by `_agree`.
+            out.append([STAR, "", True])
+            continue
+        if p.kind is p.VAR_KEYWORD:
+            continue                    # a positional call never fills it
         if p.kind is p.KEYWORD_ONLY:
             if p.default is not p.empty:
                 continue                # leave it at its default

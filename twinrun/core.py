@@ -275,6 +275,11 @@ def _sig_params(node, drop_first: bool):
     return [(a.arg, ast.unparse(a.annotation) if a.annotation else "") for a in args]
 
 
+def _star(node) -> bool:
+    """Whether this parameter list collects the rest positionally."""
+    return node.args.vararg is not None
+
+
 def _init_of(cls_node):
     if cls_node is None:
         return None
@@ -318,7 +323,8 @@ def _matched(a, b) -> bool:
         n == m or _typekey(x) == _typekey(y) for (n, x), (m, y) in zip(a, b))
 
 
-def _reconcile(base_params, head_params, head_defaults):
+def _reconcile(base_params, head_params, head_defaults,
+               base_star=False, head_star=False):
     """The parameter list both revisions can be called with, or None.
 
     A signature change is already visible in the diff, so it is not the hidden
@@ -331,6 +337,15 @@ def _reconcile(base_params, head_params, head_defaults):
     added = len(head_params) - len(base_params)
     if 0 < added <= head_defaults and _matched(head_params[:len(base_params)], base_params):
         return head_params[:len(base_params)]
+    # `__exit__(self, *args)` on one side and `(self, exc_type, exc_value, tb)`
+    # on the other is one signature written twice: a positional call of three
+    # values reaches both, and eleven of click's context managers were reported
+    # as signature changes for nothing more than that. The side that names them
+    # says what to pass; the side that collects them takes it.
+    if base_star and added > 0 and _matched(base_params, head_params[:len(base_params)]):
+        return head_params
+    if head_star and added < 0 and _matched(head_params, base_params[:len(head_params)]):
+        return base_params
     return None
 
 
@@ -382,7 +397,7 @@ def _describe(file: str, qualname: str, node, cls_node, base_node, base_cls,
         if _bad_sig(node) or _bad_sig(base_node):
             return Change(file, qualname, skip="a keyword-only parameter has no default")
         params = _reconcile(_sig_params(base_node, False), _sig_params(node, False),
-                            len(node.args.defaults))
+                            len(node.args.defaults), _star(base_node), _star(node))
         if params is None:
             return Change(file, qualname, skip=_sig_msg(base_node, node, False))
         return Change(file, qualname, params=params, is_cm=bool(decs & DECOR_CM))
@@ -397,7 +412,7 @@ def _describe(file: str, qualname: str, node, cls_node, base_node, base_cls,
         if _bad_sig(node) or _bad_sig(base_node):
             return Change(file, qualname, skip="a keyword-only parameter has no default")
         params = _reconcile(_sig_params(base_node, True), _sig_params(node, True),
-                            len(node.args.defaults))
+                            len(node.args.defaults), _star(base_node), _star(node))
         if params is None:
             return Change(file, qualname, skip=_sig_msg(base_node, node, True))
         return Change(file, qualname, kind="ctor", params=params)
@@ -413,7 +428,7 @@ def _describe(file: str, qualname: str, node, cls_node, base_node, base_cls,
     if decs & DECOR_OK:
         drop = "classmethod" in decs
         params = _reconcile(_sig_params(base_node, drop), _sig_params(node, drop),
-                            len(node.args.defaults))
+                            len(node.args.defaults), _star(base_node), _star(node))
         if params is None:
             return Change(file, qualname, skip=_sig_msg(base_node, node, drop))
         kind = "classmethod" if drop else "static"
@@ -428,12 +443,12 @@ def _describe(file: str, qualname: str, node, cls_node, base_node, base_cls,
         ctor = []
     else:
         ctor = _reconcile(_sig_params(b_init, True), _sig_params(h_init, True),
-                          len(h_init.args.defaults))
+                          len(h_init.args.defaults), _star(b_init), _star(h_init))
         if ctor is None:
             return Change(file, qualname,
                           skip=f"{cls_node.name}.__init__ " + _sig_msg(b_init, h_init, True))
     params = _reconcile(_sig_params(base_node, True), _sig_params(node, True),
-                        len(node.args.defaults))
+                        len(node.args.defaults), _star(base_node), _star(node))
     if params is None:
         return Change(file, qualname, skip=_sig_msg(base_node, node, True))
     kind = "property" if decs & DECOR_PROP else "instance"
@@ -1549,6 +1564,9 @@ def signatures(worktree: Path, change: Change, timeout: float, tmp: Path):
     return data["params"], data.get("ctor") or [], None
 
 
+STAR = "*"          # the child's stand-in for a `*args` in a parameter list
+
+
 def _agree(bsig, hsig, required_only: bool):
     """Reconcile two introspected parameter lists.
 
@@ -1557,12 +1575,17 @@ def _agree(bsig, hsig, required_only: bool):
     real calls use. A target's own optional parameters are the opposite: they are
     often exactly where the behaviour moved.
     """
+    bstar, hstar = any(n == STAR for n, _, _ in bsig), any(n == STAR for n, _, _ in hsig)
+    bsig = [p for p in bsig if p[0] != STAR]
+    hsig = [p for p in hsig if p[0] != STAR]
     keep = _reconcile([(n, a) for n, a, _ in bsig],
                       [(n, a) for n, a, _ in hsig],
-                      sum(1 for _, _, d in hsig if d))
+                      sum(1 for _, _, d in hsig if d), bstar, hstar)
     if keep is None:
         return None
-    trimmed = hsig[:len(keep)]
+    # The reconciled list may be the base's, when head is the side that
+    # collects its arguments; the defaults have to be read off the same side.
+    trimmed = (hsig if len(keep) <= len(hsig) else bsig)[:len(keep)]
     return [(n, a) for n, a, d in trimmed if not (required_only and d)]
 
 

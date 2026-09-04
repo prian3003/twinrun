@@ -130,6 +130,10 @@ def shorten(text: str) -> str:
     return text.replace(" ", "-")
 
 
+def clamp(lo: int, hi: int) -> int:
+    return lo
+
+
 class Ticket:
     def __init__(self, tag: str = ""):
         if not tag:
@@ -318,6 +322,10 @@ def scale(x: int, factor: int) -> int:            # appended a required paramete
 
 def shorten(label: str) -> str:                      # renamed, which a positional
     return label.replace(" ", "_")                # probe cannot see
+
+
+def clamp(*bounds) -> int:                        # one signature written twice:
+    return bounds[1]                              # three positional reach both
 
 
 class Ticket:                                     # every parameter optional, and
@@ -568,7 +576,7 @@ def main():
     assert "Crate.empty" not in skipped, \
         f"the constructor ran outside the trace: {skipped.get('Crate.empty')!r}"
 
-    assert rep.checked == 28, f"expected 28 callables twin-run, got {rep.checked}"
+    assert rep.checked == 29, f"expected 29 callables twin-run, got {rep.checked}"
     # Nothing builds a Feed, so the receiver has to be the RssFeed the suite
     # constructs. Without that the whole class is skipped for want of an input.
     assert any(d.qualname == "Feed.heading" for d in rep.deltas), \
@@ -577,6 +585,8 @@ def main():
     # call written differently and the two sides are still comparable.
     assert any(d.qualname == "shorten" for d in rep.deltas), \
         "a renamed parameter was read as a signature change"
+    assert any(d.qualname == "clamp" for d in rep.deltas), \
+        "a *args signature was read as a signature change"
     # @cached_property is @property with the answer kept, and @abstractmethod is
     # a marker: neither is a reason to skip, and Feed.heading below carries one.
     assert any(d.qualname == "Shelf.depth" for d in rep.deltas), \
