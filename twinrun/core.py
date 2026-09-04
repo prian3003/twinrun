@@ -990,6 +990,13 @@ TYPING = {"Optional", "Union", "List", "Dict", "Tuple", "Set", "Sequence",
           "Annotated", "Literal", "ClassVar", "None"}
 QUALIFIER = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*\.")
 
+# A type variable, as the interpreter renders one: `str(t.TypeVar("V"))` is
+# "~V". It is not a type, and the container corpus only covers it where it
+# appears inside one -- a parameter annotated with the bare variable reached
+# the fallback below and was probed with `V()`, which raises "'typing.TypeVar'
+# object is not callable" and takes every probe for that callable with it.
+TYPEVAR = re.compile(r"~[A-Za-z_][A-Za-z0-9_]*")
+
 
 def _expand(ann: str, aliases: dict, depth: int = 4) -> str:
     """Substitute aliases wherever they appear, not just when the whole
@@ -1181,6 +1188,10 @@ def _values(ann: str, ctors: dict | None = None,
         made = (_made("str", producers, GUESSED)
                 + _made("bytes", producers, GUESSED))
         return made + list(hints or []) + UNTYPED
+    # Unbound, a type variable says exactly what Any says, and Any is handled
+    # below: it is dropped when something modelled is left underneath it, and
+    # takes the generic spread when it is not.
+    ann = TYPEVAR.sub("Any", ann)
     names = re.findall(r"[A-Za-z_][A-Za-z0-9_]*", QUALIFIER.sub("", ann))
     optional = "None" in names or "Optional" in names
     # `none` is a corpus type, so the None in `Context | None` was answering for

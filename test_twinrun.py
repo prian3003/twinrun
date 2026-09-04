@@ -590,6 +590,13 @@ class Box:
                         {"kind": "function", "qualname": "g", "n_ctor": 0}, [])
     assert len(ast.literal_eval(out["value"])) == GEN_CAP, "an endless one still stops"
 
+    # A type variable is not a type. The interpreter renders one as "~V", and
+    # taking that for a class the module defines made the probe `V()`, which
+    # raises "'typing.TypeVar' object is not callable" and takes every probe
+    # for that callable with it.
+    assert _values("~V") == _values(""), "an unbound type variable says what Any says"
+    assert _values("t.Iterable[~V]")[0] == "[]", _values("t.Iterable[~V]")
+
     # A producer is keyed by what the parse tree said; a parameter asks by what
     # the interpreter resolved. Two spellings of one type have to meet, or a
     # module's own `dumps` stays invisible to its own `loads`.
