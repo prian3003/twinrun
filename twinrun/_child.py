@@ -209,6 +209,11 @@ def call(mod, env, payload, argsrc):
                 # under the same trace: the body runs, the yields are the
                 # answer, and an infinite one still stops.
                 r = list(itertools.islice(r, GEN_CAP))
+            elif payload.get("is_cm"):
+                # Entering runs the body up to the yield, leaving runs the rest,
+                # and the yielded value is what the caller of a `with` gets.
+                with r as v:
+                    r = v
         val = state_of(r) if kind == "ctor" else safe_repr(r)
         out = result("return", val, type(r).__name__, buf.getvalue())
     except BaseException as e:

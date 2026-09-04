@@ -62,6 +62,13 @@ UNTYPED = ["0", "1", "-1", "''", "'a'", "[]", "{}", "None", "True", "-0.5"]
 
 DECOR_OK = {"staticmethod", "classmethod"}
 
+# @contextmanager wraps a generator function. Calling it runs no line of the
+# body and hands back a manager whose repr is the same on every commit, so the
+# callable was skipped as decorated and, where it was not, would have compared
+# two identical placeholders. The body runs on entry, so the child enters it and
+# compares what it yields. Nothing else about the call changes.
+DECOR_CM = {"contextmanager"}
+
 # Exceptions the interpreter raises when a value is the wrong kind of thing.
 # If the old code refused a probe with one of these, the probe was never a
 # valid call, and what the new code does with it is not a behaviour anyone was
@@ -107,6 +114,7 @@ class Change:
     skip: str | None = None
     is_async: bool = False          # awaited in the child rather than called
     caller: bool = False            # pulled in for a change it does not contain
+    is_cm: bool = False             # entered in the child rather than compared
 
     @property
     def instances(self) -> list[str]:
@@ -345,15 +353,16 @@ def _describe(file: str, qualname: str, node, cls_node, base_node, base_cls,
     decs = _decorators(node) - transparent
 
     if cls_node is None:
-        if decs:
-            return Change(file, qualname, skip=f"decorated ({', '.join(sorted(decs))})")
+        if decs - DECOR_CM:
+            return Change(file, qualname,
+                          skip=f"decorated ({', '.join(sorted(decs - DECOR_CM))})")
         if _bad_sig(node) or _bad_sig(base_node):
             return Change(file, qualname, skip="a keyword-only parameter has no default")
         params = _reconcile(_sig_params(base_node, False), _sig_params(node, False),
                             len(node.args.defaults))
         if params is None:
             return Change(file, qualname, skip=_sig_msg(base_node, node, False))
-        return Change(file, qualname, params=params)
+        return Change(file, qualname, params=params, is_cm=bool(decs & DECOR_CM))
 
     if name in ("__init__", "__new__"):
         # A constructor returns nothing, so the instance it left behind is the
@@ -373,7 +382,7 @@ def _describe(file: str, qualname: str, node, cls_node, base_node, base_cls,
     # computes is behaviour like any other -- a commit that changes what
     # `cart.total` comes back with is exactly what this tool is for -- and it
     # was the largest single class of skip in the click and jinja sweeps.
-    unknown = decs - DECOR_OK - {"property"}
+    unknown = decs - DECOR_OK - DECOR_CM - {"property"}
     if unknown:
         return Change(file, qualname, skip=f"decorated ({', '.join(sorted(unknown))})")
     if _bad_sig(node) or _bad_sig(base_node):
@@ -405,7 +414,8 @@ def _describe(file: str, qualname: str, node, cls_node, base_node, base_cls,
     if params is None:
         return Change(file, qualname, skip=_sig_msg(base_node, node, True))
     kind = "property" if "property" in decs else "instance"
-    return Change(file, qualname, kind=kind, params=params, ctor_params=ctor)
+    return Change(file, qualname, kind=kind, params=params, ctor_params=ctor,
+                  is_cm=bool(decs & DECOR_CM))
 
 
 def is_test_path(path: str) -> bool:
@@ -1384,6 +1394,7 @@ def run_side(side: str, worktree: Path, change: Change, probes, timeout: float,
         "qualname": change.qualname,
         "kind": change.kind,
         "is_async": change.is_async,
+        "is_cm": change.is_cm,
         "n_ctor": 1 if change.instances else len(change.ctor_params),
         "built": bool(change.instances),
         "lines": change.lines.get(side, []),

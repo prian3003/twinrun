@@ -19,6 +19,9 @@ from twinrun.core import (_ctor_exprs, _ctor_map, _own, _targets, _typekey, _val
                           cluster, verify, write_verdicts)
 
 BASE = '''
+from contextlib import contextmanager
+
+
 def discount(price: int, pct: int) -> int:
     return price - price * pct // 100
 
@@ -185,9 +188,17 @@ def strict(v):
 
 async def fetch(n: int) -> int:
     return n * 2
+
+
+@contextmanager
+def borrow(n: int):
+    yield n * 2
 '''
 
 HEAD = '''
+from contextlib import contextmanager
+
+
 def discount(price: int, pct: int) -> int:
     return price - price * pct / 100              # int -> float
 
@@ -358,6 +369,11 @@ def strict(v):
 
 async def fetch(n: int) -> int:
     return n * 3                                  # awaited, and it changed
+
+
+@contextmanager
+def borrow(n: int):                            # calling it runs no line of
+    yield n * 3                                   # the body; entering it does
 '''
 
 
@@ -530,11 +546,15 @@ def main():
     assert "Crate.empty" not in skipped, \
         f"the constructor ran outside the trace: {skipped.get('Crate.empty')!r}"
 
-    assert rep.checked == 25, f"expected 25 callables twin-run, got {rep.checked}"
+    assert rep.checked == 26, f"expected 26 callables twin-run, got {rep.checked}"
     # Nothing builds a Feed, so the receiver has to be the RssFeed the suite
     # constructs. Without that the whole class is skipped for want of an input.
     assert any(d.qualname == "Feed.heading" for d in rep.deltas), \
         "an abstract receiver went unprobed"
+    # Calling a @contextmanager runs no line of the body, so without entering it
+    # the probe compares two identical manager objects and reaches nothing.
+    assert any(d.qualname == "borrow" for d in rep.deltas), \
+        "a context manager was compared without being entered"
     # Ticket() raises, so the receiver has to be built from a parameter that
     # carries a default. Without the retry the whole class is skipped for want
     # of an input and its changed label() is never compared.
