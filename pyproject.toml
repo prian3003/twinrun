@@ -2,14 +2,30 @@
 name = "twinrun"
 version = "0.1.0"
 description = "Run the old and new version of changed code on identical inputs and diff the outputs."
+readme = "README.md"
 requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+keywords = ["testing", "regression", "differential", "git", "diff"]
 dependencies = []
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Software Development :: Quality Assurance",
+    "Topic :: Software Development :: Testing",
+]
+
+[project.urls]
+Homepage = "https://github.com/prian3003/twinrun"
+Source = "https://github.com/prian3003/twinrun"
 
 [project.scripts]
 twinrun = "twinrun.cli:main"
 
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
