@@ -249,6 +249,12 @@ Exits 1 when there is a finding, 2 on a usage error, so it drops into CI as-is.
 make install        # pip install -e .
 ```
 
+Or run it out of a checkout without installing anything:
+
+```
+python3 -m twinrun . --base main --head HEAD
+```
+
 No dependencies. Python 3.10+.
 
 ## Use
