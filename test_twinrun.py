@@ -755,6 +755,19 @@ class Box:
                         {"kind": "function", "qualname": "g", "n_ctor": 0}, [])
     assert len(ast.literal_eval(out["value"])) == GEN_CAP, "an endless one still stops"
 
+    # A note is part of the message the caller is shown. networkx's 05809740
+    # moved "The edge is not in the graph" from a raised KeyError onto a note on
+    # the original one, so str(e) became `1` and a report showing only str(e)
+    # said the sentence had vanished rather than moved.
+    def noted():
+        err = KeyError(1)
+        err.add_note("The edge (1, 2) is not in the graph")
+        raise err
+
+    out, _ = child_call(types.SimpleNamespace(g=noted), env,
+                        {"kind": "function", "qualname": "g", "n_ctor": 0}, [])
+    assert "not in the graph" in out["value"], out
+
     # A type variable is not a type. The interpreter renders one as "~V", and
     # taking that for a class the module defines made the probe `V()`, which
     # raises "'typing.TypeVar' object is not callable" and takes every probe

@@ -246,7 +246,14 @@ def call(mod, env, payload, argsrc):
         val = state_of(r) if kind == "ctor" else safe_repr(r)
         out = result("return", val, type(r).__name__, buf.getvalue())
     except BaseException as e:
-        out = result("raise", f"{type(e).__name__}: {e}", type(e).__name__, buf.getvalue())
+        # A note is part of what the caller is shown and part of what changed.
+        # networkx's 05809740 replaced `raise KeyError("The edge is not in the
+        # graph")` with add_note on the original KeyError, so str(e) went from
+        # the sentence to `1` -- a real break for anyone matching the message,
+        # and unreadable in a report that shows only str(e).
+        notes = "".join(f" [{n}]" for n in getattr(e, "__notes__", ()) or ())
+        out = result("raise", f"{type(e).__name__}: {e}{notes}",
+                     type(e).__name__, buf.getvalue())
 
     after = [safe_repr(a) for a in args]
     marks = []
