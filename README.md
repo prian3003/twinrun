@@ -7,6 +7,18 @@ where the outputs differ.
 
 <br clear="left">
 
+[![ci](https://github.com/prian3003/twinrun/actions/workflows/ci.yml/badge.svg)](https://github.com/prian3003/twinrun/actions/workflows/ci.yml)
+
+A diff tells you which lines changed. It does not tell you what the program now
+does differently, which is the thing you actually care about, and tests only
+catch what somebody thought to assert in advance. What falls between the two is
+the change nobody intended: the refactor that was supposed to preserve
+behaviour, the helper whose return type slid from `int` to `float`, the
+sentinel that used to mean *missing*.
+
+That gap widened once models started writing most of the change. There is more
+diff than anyone can read closely, and the person merging it did not write it.
+
 The old code is the oracle. You don't write a specification, you don't write
 assertions, and there is nothing to configure — if the behaviour of something
 changed and you didn't mean it to, twinrun shows you the exact call that proves it.
@@ -31,6 +43,13 @@ twinrun main..HEAD
 ```
 
 Exits 1 when there is a finding, 2 on a usage error, so it drops into CI as-is.
+
+None of that is asserted. Across the 509 click commits since 2019 it checks
+1628 callables and reports 241 findings, and against commits the maintainers
+themselves later reverted — their own verdict, not mine — it catches 5 of 7.
+[Does it catch real regressions](#does-it-catch-real-regressions) has the
+table; [Prior art](#prior-art) is why this is not an LLM reviewer, a linter, or
+CrossHair.
 
 | Reach for it when | It will not help when |
 |---|---|
@@ -74,7 +93,7 @@ twinrun ~/work/api --base main --head my-branch
 | `--repeats` | `2` | runs per side used to detect non-determinism |
 | `--accept` | | record the current findings as intended, in `.twinrun.json`, and keep the calls as invariants |
 | `--note` | | a line stored alongside what `--accept` records |
-| `--llm` | off | when nothing can be built, or nothing reaches the change, ask a model for an input |
+| `--llm` | off | when nothing can be built, or nothing reaches the change, ask a model for an input — needs `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` |
 
 CI runs the self-check on 3.10/3.12/3.13, and on every pull request twinrun
 verifies that pull request against its own base branch.
