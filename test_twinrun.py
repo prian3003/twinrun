@@ -761,7 +761,9 @@ class Box:
     # said the sentence had vanished rather than moved.
     def noted():
         err = KeyError(1)
-        err.add_note("The edge (1, 2) is not in the graph")
+        # Set rather than add_note(), which the interpreter grew in 3.11; the
+        # attribute is what the child reads, and it is read the same either way.
+        err.__notes__ = ["The edge (1, 2) is not in the graph"]
         raise err
 
     out, _ = child_call(types.SimpleNamespace(g=noted), env,
