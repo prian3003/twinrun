@@ -45,7 +45,7 @@ twinrun main..HEAD
 Exits 1 when there is a finding, 2 on a usage error, so it drops into CI as-is.
 
 None of that is asserted. Across the 509 click commits since 2019 it checks
-1628 callables and reports 241 findings, and against commits the maintainers
+1630 callables and reports 243 findings, and against commits the maintainers
 themselves later reverted — their own verdict, not mine — it catches 5 of 7.
 [Does it catch real regressions](#does-it-catch-real-regressions) has the
 table; [Prior art](#prior-art) is why this is not an LLM reviewer, a linter, or
@@ -351,8 +351,8 @@ that are not the commit's fault.
    the instance first, and a commit that touches `__init__` alongside a method
    had every method on the class reporting coverage of an edit its own body
    never ran. Across the 53 non-merge itsdangerous commits since 2019 that
-   touch the package — 29 of which leave anything executable to run — 3549 of
-   4987 probes reach it; the rest run the function around the edit. A callable
+   touch the package — 29 of which leave anything executable to run — 3554 of
+   4990 probes reach it; the rest run the function around the edit. A callable
    that nothing reached and that produced no delta is reported as skipped
    rather than counted as checked: 12 of the 39 skips on that sweep, against
    202 callables checked. A delta overrides the reach test: a moved
@@ -463,8 +463,8 @@ passed over rather than reported.
 ### Asking for an input twinrun cannot build
 
 Every value it probes with comes from an annotation, a guard literal, or a
-construction lifted out of the test suite, and on click that leaves 493
-callables unprobed: 184 where nothing could be built at all, and 309 where
+construction lifted out of the test suite, and on click that leaves 491
+callables unprobed: 184 where nothing could be built at all, and 307 where
 something was built and no probe ran a line the commit moved. Both are one
 failure -- a type the corpus does not model, or a value too specific to guess
 -- and it is the largest single thing standing between the tool and the rest of
@@ -497,14 +497,27 @@ moved; a `param_decls=['--bar']` was the whole of what it was missing. A gain
 of two findings on forty commits is real and small; it buys the callables
 nothing else can reach, not a better answer on the ones already reached.
 
+What that gain is worth depends entirely on how much the repository writes
+down. click annotates its parameters, so the corpus already reaches most of
+what it can reach and the model adds a little at the edge. networkx annotates
+almost nothing, and there the same flag takes the sweep from 98 callables
+checked to 197 and from 14 findings to 32 —
+[the numbers are below](#a-repository-that-annotates-nothing-and-decorates-everything).
+
 ## What it covers
 
 Module-level functions, instance methods, `@staticmethod` and `@classmethod`.
 `@property` and `@cached_property`, called by reading them, because what they
 compute is behaviour like anything else. `async def`, awaited in the child.
-`@contextmanager`, entered. A function behind a marker decorator — `@abstractmethod`,
-or one in the module that records something and returns the function unchanged,
-which both revisions have to agree it does.
+`@contextmanager`, entered. A module-level function behind any decorator that
+still runs it: the child unwraps the decorated name and checks that the code it
+lands on was defined in the file under test, so a `functools.wraps` wrapper is
+called — networkx's `@_dispatchable`, `@lru_cache` — and a decorator that hands
+back something else is not, because click's `@command` builds a `Command` with
+no code of its own and calling that runs a command line. On a method the
+decorator still has to be one of the known ones: `@abstractmethod`, or one in
+the module that records something and returns the function unchanged, which
+both revisions have to agree it does.
 
 `*args`, `**kwargs`, and keyword-only parameters that have defaults: none of them
 needs a value, so the callable is probed on its positional parameters. A `*args`
@@ -595,7 +608,7 @@ tool catching `f513b48d` fails the build.
 
 Everything above is Pallets: four repositories, one author, one house style.
 The first sweep outside that family was rich — 197 commits since 2024 touching
-`rich/`, 152 callables checked, 30 findings across 17 commits, 232 skips.
+`rich/`, 165 callables checked, 36 findings across 18 commits, 217 skips.
 
 It charged a bug on the way in. `Console._caller_frame_info` hands back a
 frame's globals, and a value past 2000 characters used to be truncated with its
@@ -604,22 +617,25 @@ byte count — in the region the report does not print. Fixed: the marker no
 longer carries a length, at the price of missing a real difference past the
 cap. Four repositories of the same family had never produced that.
 
-After it, all thirty are true differences. Six are worth little: an attribute
-the commit itself added, a module that stopped importing `inspect`. Three are
-worth the sweep, and two of those are crashes a commit introduced.
+After it, all thirty-six are true differences. Ten are worth little: an
+attribute the commit itself added, a module that stopped importing `inspect`,
+and four that report at a cached name a change already reported at the
+uncached one beside it. Four are worth the sweep, and two of those are crashes
+a commit introduced.
 
 | commit | subject | what twinrun says |
 |---|---|---|
 | `7001a52a` | move to cells.py | `chop_cells("auto", 0)` returned `['', 'a', 'u', 't', 'o']` and now raises `ValueError: range() arg 3 must not be zero` |
 | `70d8f9ad` | permit nested live | `Console().clear_live()` returned `None` and now raises `IndexError: pop from empty list` — the new `_live_stack` is popped without being checked |
+| `230fdacb` | test | `load(".")` raised `ValueError: unicode version string '.' is badly formatted` and now returns a `CellTable` for 17.0.0, so a malformed version silently becomes the default |
 | `69cee6e1` | preserve newlines | `AnsiDecoder().decode("")` yielded nothing and now yields one empty `Text`, because `"".splitlines()` is `[]` and `re.split(r"(?<=\n)", "")` is `[""]` |
 
 A commit whose subject is *move to cells.py* is the case this exists for.
 
 What a framework costs is worth stating plainly. Across the 509 click commits
-since 2019 that touch `src/click`, the tool checks 1628 callables and lands
-20320 of 47557 probes on a changed line. It skips 184 callables because it
-could not build an input at all, and 309 because every probe ran without
+since 2019 that touch `src/click`, the tool checks 1630 callables and lands
+20336 of 47573 probes on a changed line. It skips 184 callables because it
+could not build an input at all, and 307 because every probe ran without
 reaching the change. That first number was 352 until a rule came out: a commit
 touching a class's `__init__` used to take the test suite's constructions away
 from every method on it, on the theory that the same call now builds a
@@ -634,8 +650,71 @@ the genuinely hard part: click's world is `Context`, `Command`, `Option` and
 `Parameter`, each wanting another of its own kind, and two levels of
 constructor synthesis is not the whole of it — a third was measured and moved
 that first number by nothing. The same sweep over itsdangerous — a library of
-leaf types — skips 4 and 12. The remaining decorated skips are click's own
-example CLIs, where `@click.command` has turned the function into a `Command`.
+leaf types — skips 4 and 12. click's own example CLIs are skipped a step later
+now: `@click.command` has turned the function into a `Command`, and the child
+says so only after failing to import the example's own dependencies.
+
+### A repository that annotates nothing and decorates everything
+
+networkx is the third family, after Pallets and rich: 164 commits since January
+2026 touching `networkx/`, a graph library that annotates almost nothing and
+decorates almost everything.
+
+As shipped, twinrun checked 53 of its callables and reported 10 findings, and
+one decorator name was the largest single reason it gave up. networkx puts
+`@_dispatchable` on nearly every algorithm it ships, and a parse tree cannot
+tell a wrapper that replaces a function from one that hands the call straight
+through, so it skipped both: 168 callables of 356 skipped.
+
+The interpreter can tell them apart. `functools.wraps` leaves `__wrapped__`
+behind, so the child unwraps the decorated name and asks where the code it
+lands on was defined. If that is the file under test, calling the decorated
+name runs the body under test. `@_dispatchable` passes — the parameters it adds
+are keyword-only, so the positional call the parse tree already wrote reaches
+the body untouched — and so does `@lru_cache`, where a cached call is the same
+call and each side fills its own cache in its own process. A `Command` has no
+code of its own and is still skipped.
+
+The second wall is the one `--llm` is for. A graph library's parameter is a
+`Graph`, its annotation is absent, and the corpus spread of `0`, `''` and `[]`
+dies inside the wrapper before the body runs. Asked for an input, a model
+writes `nx.path_graph(4)`.
+
+| | callables checked | probes on a changed line | findings |
+|---|---|---|---|
+| as shipped | 53 | 902 of 2343 | 10 |
+| decorator asked at runtime | 98 | 1316 of 5904 | 14 |
+| and `--llm` | 197 | 1968 of 10299 | 32 |
+
+102 model calls over 164 commits, cached by prompt.
+
+Twelve of the 32 are worth nothing, and it is worth saying what they are: six
+are a `pygraphviz` URL that gained an `s` inside an `ImportError`, four are a
+tuple arity quoted in a *too many values to unpack* message, one is a float
+that moved in its last digit when a sum became a matrix multiply, and one is
+junk input the old code happened to accept. Nine of those twelve are the same
+shape — both sides raise the same exception type and only the message differs.
+That is a higher noise floor than any Pallets sweep, and it is what a
+repository with no annotations costs.
+
+The other twenty are true, and one of them is the case this exists for.
+
+| commit | subject | what twinrun says |
+|---|---|---|
+| `d66d81f5` | Add and correct ISMAGS method docs | `problem_type` fell through to subgraph isomorphism for any unrecognised string — the docstring being corrected said so in as many words — and now raises `ValueError: Invalid problem_type='UNKNOWN'` |
+| `05809740` | Improving views exceptions | `G.edges[1, 2]` raised `KeyError("The edge (1, 2) is not in the graph.")` and now raises `KeyError(1)` with that sentence moved to a note, so anything reading `str(e)` sees `1` |
+| `a094c926` | Change maximal_independent_set to return set instead of list | `maximal_independent_set(path_graph(4), [0])` returned `[0, 3]` and now returns `{0, 2}` |
+| `9533b0aa` | MNT: Use linalg.eigh to compute HITS eigenvalues | `_hits_numpy(path_graph(4))` returns the same four numbers on different nodes |
+
+A commit titled *Add and correct ISMAGS method docs* is a commit nobody reads
+for a behaviour change. Three of its files are docstrings; one line of it turns
+a documented accepting path into a raise. That is the whole argument for
+running the code instead of reading the diff.
+
+The note in `05809740` is why a raise now carries its notes into the compared
+value. Three sibling views in that same commit went from `KeyError: 1` to
+`KeyError: 1` with a note attached — identical to a report that shows only
+`str(e)`, and invisible until the notes were included.
 
 ## Prior art
 
