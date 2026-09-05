@@ -358,11 +358,14 @@ def transparent(fn, path: str) -> bool:
     A decorator that wraps the target leaves __wrapped__ behind -- functools.wraps
     sets it, and networkx's @_dispatchable is one of these: the parameters it adds
     are keyword-only, so the positional call the parse tree wrote still reaches the
-    body. A decorator that hands back something else is not the function under test
-    and is not called: click's @command builds a Command whose call runs a command
-    line, @lru_cache builds a C wrapper with no code object of its own.
+    body. @lru_cache is another, and a cached call is the same call: both sides run
+    in their own process, so both fill their own cache with the same values.
+
+    A decorator that hands back something else is not the function under test and is
+    not called. click's @command builds a Command, whose call runs a command line --
+    it has no __wrapped__ and no code of its own, and neither has a class.
     """
-    if not inspect.isfunction(fn):
+    if not callable(fn):
         return False
     code = getattr(inspect.unwrap(fn), "__code__", None)
     return code is not None and \

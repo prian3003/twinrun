@@ -805,8 +805,9 @@ class Box:
 
     assert transparent(deco(plain), __file__), "a wraps() wrapper is called through"
     assert not transparent(deco(ast.walk), __file__), "a wrapper around another file is not"
-    assert not transparent(functools.lru_cache(plain), __file__), "nor a C wrapper"
-    assert not transparent(object(), __file__), "nor anything that is not a function"
+    assert transparent(functools.lru_cache(plain), __file__), "so is a cached one"
+    assert not transparent(dict, __file__), "a class is not the function under test"
+    assert not transparent(object(), __file__), "nor anything that is not callable"
     assert _values("~V") == _values(""), "an unbound type variable says what Any says"
     assert _values("t.Iterable[~V]")[0] == "[]", _values("t.Iterable[~V]")
 
