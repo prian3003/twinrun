@@ -82,7 +82,14 @@ def cap(s):
     s = ADDR.sub("...", s)
     s = TMP.sub("<tmp>", s)
     s = LINENO.sub(r"\1:<line>", s)
-    return s if len(s) <= LIMIT else s[:LIMIT] + f"...<{len(s)} chars total>"
+    # A value past LIMIT is shown as its first LIMIT characters, and the length
+    # must not go into the compared string. Two values with the same visible
+    # prefix would then differ by a byte count alone, and the report would show
+    # the reader two identical blocks -- a finding the tool cannot display is a
+    # finding it cannot defend. rich's Console._caller_frame_info returns a
+    # frame's globals, whose repr grows whenever anything in the module is
+    # renamed or imported, so every commit near it differed.
+    return s if len(s) <= LIMIT else s[:LIMIT] + "...<truncated>"
 
 
 def load(root: Path, relfile: str):

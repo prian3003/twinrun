@@ -764,6 +764,15 @@ class Box:
     assert cap(scratch) == "<tmp>/note.txt", cap(scratch)
     warn = "<repo>/src/pkg/types.py:744: RuntimeWarning: bool used as a fd"
     assert cap(warn).startswith("<repo>/src/pkg/types.py:<line>:"), cap(warn)
+
+    # Two long values with the same visible prefix compare equal. rich's
+    # Console._caller_frame_info hands back a frame's globals, and its repr
+    # grows whenever anything in that module is imported or renamed -- so the
+    # length, carried in the marker, was the whole of the reported difference,
+    # in a region the report cannot show.
+    long_a, long_b = "x" * 3000, "x" * 3030
+    assert cap(long_a) == cap(long_b), "a difference past the cap is not a delta"
+    assert cap(long_a) != cap("x" * 1999 + "y" * 1001), "a visible one still is"
     assert _values("~V") == _values(""), "an unbound type variable says what Any says"
     assert _values("t.Iterable[~V]")[0] == "[]", _values("t.Iterable[~V]")
 
