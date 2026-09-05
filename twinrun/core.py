@@ -125,6 +125,7 @@ class Change:
     is_async: bool = False          # awaited in the child rather than called
     caller: bool = False            # pulled in for a change it does not contain
     is_cm: bool = False             # entered in the child rather than compared
+    decorated: tuple = ()           # decorators the child must find transparent
 
     @property
     def instances(self) -> list[str]:
@@ -389,16 +390,19 @@ def _describe(file: str, qualname: str, node, cls_node, base_node, base_cls,
     decs = _decorators(node) - transparent - DECOR_MARKER
 
     if cls_node is None:
-        if decs - DECOR_CM:
-            return Change(file, qualname,
-                          skip=f"decorated ({', '.join(sorted(decs - DECOR_CM))})")
+        # A decorator the parse tree does not recognise is not a reason to give
+        # up on a function: the interpreter can say whether calling the
+        # decorated name still runs the body, and it is asked in `introspect`.
+        # networkx puts @_dispatchable on nearly every algorithm it ships, and
+        # that one name took the whole library out of reach.
         if _bad_sig(node) or _bad_sig(base_node):
             return Change(file, qualname, skip="a keyword-only parameter has no default")
         params = _reconcile(_sig_params(base_node, False), _sig_params(node, False),
                             len(node.args.defaults), _star(base_node), _star(node))
         if params is None:
             return Change(file, qualname, skip=_sig_msg(base_node, node, False))
-        return Change(file, qualname, params=params, is_cm=bool(decs & DECOR_CM))
+        return Change(file, qualname, params=params, is_cm=bool(decs & DECOR_CM),
+                      decorated=tuple(sorted(decs - DECOR_CM)))
 
     if name in ("__init__", "__new__"):
         # A constructor returns nothing, so the instance it left behind is the
@@ -1586,6 +1590,7 @@ def signatures(worktree: Path, change: Change, timeout: float, tmp: Path):
         "file": change.file,
         "qualname": change.qualname,
         "kind": change.kind,
+        "decorated": list(change.decorated),
     }, timeout, tmp)
     if data is None:
         return None, None, err

@@ -345,6 +345,23 @@ def _params_of(fn, drop_first):
     return out, None
 
 
+def transparent(fn, path: str) -> bool:
+    """Whether calling the decorated name still runs the function in this file.
+
+    A decorator that wraps the target leaves __wrapped__ behind -- functools.wraps
+    sets it, and networkx's @_dispatchable is one of these: the parameters it adds
+    are keyword-only, so the positional call the parse tree wrote still reaches the
+    body. A decorator that hands back something else is not the function under test
+    and is not called: click's @command builds a Command whose call runs a command
+    line, @lru_cache builds a C wrapper with no code object of its own.
+    """
+    if not inspect.isfunction(fn):
+        return False
+    code = getattr(inspect.unwrap(fn), "__code__", None)
+    return code is not None and \
+        Path(code.co_filename).resolve() == Path(path).resolve()
+
+
 def introspect(mod, payload):
     """Real signatures, resolved by the interpreter. The parse tree cannot see an
     inherited constructor, cannot expand a type alias, and cannot resolve a
@@ -352,6 +369,9 @@ def introspect(mod, payload):
     kind, qualname = payload["kind"], payload["qualname"]
     if kind == "function":
         target, ctor_src = getattr(mod, qualname), None
+        decs = payload.get("decorated") or []
+        if decs and not transparent(target, Path(payload["root"]) / payload["file"]):
+            return {"params": None, "reason": f"decorated ({', '.join(decs)})"}
     else:
         cls_name, name = qualname.split(".", 1)
         cls = getattr(mod, cls_name)

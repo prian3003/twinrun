@@ -6,6 +6,7 @@ Run: python3 test_twinrun.py
 
 import ast
 import builtins
+import functools
 import os
 import subprocess
 import sys
@@ -14,7 +15,7 @@ import types
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from twinrun._child import GEN_CAP, Sibling, cap
+from twinrun._child import GEN_CAP, Sibling, cap, transparent
 from twinrun._child import call as child_call
 from twinrun.core import (_ctor_exprs, _ctor_map, _own, _targets, _typekey, _values,
                           cluster, read_invariants, verify, write_verdicts)
@@ -773,6 +774,26 @@ class Box:
     long_a, long_b = "x" * 3000, "x" * 3030
     assert cap(long_a) == cap(long_b), "a difference past the cap is not a delta"
     assert cap(long_a) != cap("x" * 1999 + "y" * 1001), "a visible one still is"
+
+    # A decorator the parse tree does not recognise is not a reason to skip a
+    # function: what matters is whether calling the decorated name still runs the
+    # body. networkx puts @_dispatchable on nearly every algorithm it ships, and
+    # it wraps with functools.wraps, so the unwrap lands back in the file under
+    # test. click's @command hands back a Command whose call runs a command line,
+    # and @lru_cache a C wrapper with no code object -- neither is called.
+    def deco(f):
+        @functools.wraps(f)
+        def w(*a, backend=None, **k):
+            return f(*a, **k)
+        return w
+
+    def plain(x):
+        return x
+
+    assert transparent(deco(plain), __file__), "a wraps() wrapper is called through"
+    assert not transparent(deco(ast.walk), __file__), "a wrapper around another file is not"
+    assert not transparent(functools.lru_cache(plain), __file__), "nor a C wrapper"
+    assert not transparent(object(), __file__), "nor anything that is not a function"
     assert _values("~V") == _values(""), "an unbound type variable says what Any says"
     assert _values("t.Iterable[~V]")[0] == "[]", _values("t.Iterable[~V]")
 
