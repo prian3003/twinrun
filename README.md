@@ -1,7 +1,11 @@
+<img src="assets/logo.svg" width="72" align="left" alt="">
+
 # twinrun
 
 Run the old and the new version of changed code on identical inputs, and report
 where the outputs differ.
+
+<br clear="left">
 
 The old code is the oracle. You don't write a specification, you don't write
 assertions, and there is nothing to configure — if the behaviour of something
@@ -28,7 +32,114 @@ twinrun main..HEAD
 
 Exits 1 when there is a finding, 2 on a usage error, so it drops into CI as-is.
 
+| Reach for it when | It will not help when |
+|---|---|
+| A refactor claims to change nothing, and you want that claim checked | The change only shows up through thread or I/O ordering — twinrun compares outputs, not schedules |
+| An agent wrote the change: it knows what it meant to touch and nothing about what else moved | The callable cannot run without a live database or service |
+| The code is importable and the test suite already constructs the objects it needs | Nothing names the types — an unannotated private method nothing calls has nothing to build from |
+| You want the diff's *behavioural* consequence, not an opinion about the diff | The repository is not Python |
+
+When the change was the point, `--accept` records it, and the calls it recorded
+become invariants that later commits are checked against.
+
+## Install
+
+```
+make install        # pip install -e .
+```
+
+Or run it out of a checkout without installing anything:
+
+```
+python3 -m twinrun . --base main --head HEAD
+```
+
+No dependencies. Python 3.10+.
+
+## Use
+
+```
+make all                                  # self-check, then twinrun on its own last commit
+make demo REPO=~/work/api BASE=main HEAD=my-branch
+twinrun ~/work/api --base main --head my-branch
+```
+
+| flag | default | meaning |
+|---|---|---|
+| `--base` | `HEAD~1` | revision treated as the oracle |
+| `--head` | `HEAD` | revision under test |
+| `--limit` | `24` | max probes per callable |
+| `--timeout` | `20` | seconds per side, per callable |
+| `--seed` | `0` | probe sampling seed |
+| `--repeats` | `2` | runs per side used to detect non-determinism |
+| `--accept` | | record the current findings as intended, in `.twinrun.json`, and keep the calls as invariants |
+| `--note` | | a line stored alongside what `--accept` records |
+| `--llm` | off | when nothing can be built, or nothing reaches the change, ask a model for an input |
+
+CI runs the self-check on 3.10/3.12/3.13, and on every pull request twinrun
+verifies that pull request against its own base branch.
+
+In someone else's repository that is one step. The action checks out the base
+revision itself, since a shallow clone does not have it, and writes the report
+to the job summary:
+
+```yaml
+- uses: actions/checkout@v4
+  with: {fetch-depth: 0}
+- uses: prian3003/twinrun@main
+```
+
+It fails the job on a finding, which is the point of putting it there. A team
+that wants the report without the gate sets `fail-on-finding: false`; a usage
+error still fails either way. The number of findings comes back as the
+`findings` output, and `base`, `head`, `limit` and `timeout` take the flags of
+the same name.
+
+The other place it belongs is next to whatever wrote the change. An agent
+finishing an edit has the reviewer's problem and less to go on: it knows what
+it meant to change and nothing about what else moved. `twinrun-mcp` is the same
+verify behind an MCP tool, so it can ask.
+
+```json
+"mcpServers": {"twinrun": {"command": "twinrun-mcp"}}
+```
+
+It speaks the protocol on stdin and stdout with no package behind it, for the
+reason the rest of the tool has none: twinrun imports the code it is measuring,
+and a dependency it carries is one that can collide with the repository under
+test. One tool is exposed, `verify`, returning the report a person reads and
+the same answer as data. `--accept` is deliberately not exposed. A verdict is a
+person saying a change was meant, and an agent blessing its own findings would
+write the regression down as the answer.
+
 ## How it works
+
+```mermaid
+flowchart TD
+    D["git diff<br/>base .. head"] --> R["1 · Blast radius<br/><i>callables whose AST moved,<br/>plus one level of callers</i>"]
+    R --> S["2 · Signatures<br/><i>asked of the interpreter,<br/>in each worktree</i>"]
+    S --> P["3 · Producers<br/><i>a call that yields the type<br/>a corpus cannot build</i>"]
+    P --> B["4 · Probes<br/><i>one input column per parameter</i>"]
+
+    B --> W1["5 · base worktree<br/>subprocess"]
+    B --> W2["5 · head worktree<br/>subprocess"]
+    W1 --> N["6 · Normalise<br/><i>paths, addresses, tmp names</i>"]
+    W2 --> N
+
+    N --> F["7 · Flake filter<br/><i>each probe twice per side</i>"]
+    F --> C["8 · Contract<br/><i>a delta the old code refused<br/>is not a delta</i>"]
+    C --> G["9 · Cluster<br/><i>one root cause, one finding</i>"]
+    G --> O(["report · exit 1 on a finding"])
+
+    classDef run fill:#0B6E77,stroke:#0B6E77,color:#fff
+    classDef out fill:#1f2937,stroke:#1f2937,color:#fff
+    class W1,W2 run
+    class O out
+```
+
+The old code runs in one worktree, the new code in the other, on byte-identical
+inputs. Everything between step 6 and step 9 exists to throw away differences
+that are not the commit's fault.
 
 1. **Blast radius** — diff the two revisions, parse both sides, keep the callables
    whose AST actually changed, plus one level of their callers in the same file.
@@ -275,75 +386,6 @@ Exits 1 when there is a finding, 2 on a usage error, so it drops into CI as-is.
 9. **Cluster** — one root cause is one finding. Thirty calls that all differ
    `int → float` are reported once, with a count.
 
-## Install
-
-```
-make install        # pip install -e .
-```
-
-Or run it out of a checkout without installing anything:
-
-```
-python3 -m twinrun . --base main --head HEAD
-```
-
-No dependencies. Python 3.10+.
-
-## Use
-
-```
-make all                                  # self-check, then twinrun on its own last commit
-make demo REPO=~/work/api BASE=main HEAD=my-branch
-twinrun ~/work/api --base main --head my-branch
-```
-
-| flag | default | meaning |
-|---|---|---|
-| `--base` | `HEAD~1` | revision treated as the oracle |
-| `--head` | `HEAD` | revision under test |
-| `--limit` | `24` | max probes per callable |
-| `--timeout` | `20` | seconds per side, per callable |
-| `--seed` | `0` | probe sampling seed |
-| `--repeats` | `2` | runs per side used to detect non-determinism |
-| `--accept` | | record the current findings as intended, in `.twinrun.json`, and keep the calls as invariants |
-| `--note` | | a line stored alongside what `--accept` records |
-| `--llm` | off | when nothing can be built, or nothing reaches the change, ask a model for an input |
-
-CI runs the self-check on 3.10/3.12/3.13, and on every pull request twinrun
-verifies that pull request against its own base branch.
-
-In someone else's repository that is one step. The action checks out the base
-revision itself, since a shallow clone does not have it, and writes the report
-to the job summary:
-
-```yaml
-- uses: actions/checkout@v4
-  with: {fetch-depth: 0}
-- uses: prian3003/twinrun@main
-```
-
-It fails the job on a finding, which is the point of putting it there. A team
-that wants the report without the gate sets `fail-on-finding: false`; a usage
-error still fails either way. The number of findings comes back as the
-`findings` output, and `base`, `head`, `limit` and `timeout` take the flags of
-the same name.
-
-The other place it belongs is next to whatever wrote the change. An agent
-finishing an edit has the reviewer's problem and less to go on: it knows what
-it meant to change and nothing about what else moved. `twinrun-mcp` is the same
-verify behind an MCP tool, so it can ask.
-
-```json
-"mcpServers": {"twinrun": {"command": "twinrun-mcp"}}
-```
-
-It speaks the protocol on stdin and stdout with no package behind it, for the
-reason the rest of the tool has none: twinrun imports the code it is measuring,
-and a dependency it carries is one that can collide with the repository under
-test. One tool is exposed, `verify`, returning the report a person reads and
-the same answer as data. `--accept` is deliberately not exposed. A verdict is a
-person saying a change was meant, and an agent blessing its own findings would
-write the regression down as the answer.
 
 ## Intended changes
 

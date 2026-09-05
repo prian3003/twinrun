@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" width="96" height="96" role="img" aria-label="twinrun">
+  <title>twinrun</title>
+  <!-- one input, forked: the old code above, the new code below -->
+  <g fill="none" stroke-width="6" stroke-linecap="round">
+    <path d="M19 48 Q48 10 77 48" stroke="#8b949e"/>
+    <path d="M19 48 Q48 86 77 48" stroke="#2AA0A8"/>
+  </g>
+  <!-- the call that goes into both -->
+  <circle cx="19" cy="48" r="6" fill="#8b949e"/>
+  <!-- where the two outputs are compared -->
+  <path d="M77 39 L86 48 L77 57 L68 48 Z" fill="#2AA0A8"/>
+</svg>
