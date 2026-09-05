@@ -203,15 +203,11 @@ def _targets(src: str) -> dict[str, tuple]:
     return out
 
 
-def _ctor_map(srcs, owners: dict | None = None) -> dict[str, list]:
+def _ctor_map(srcs) -> dict[str, list]:
     """Constructor parameters for every class in a package, with an inherited
     __init__ resolved to the base class that defines it. TimestampSigner takes
     its constructor from Signer in another module; without this it is built
-    with no arguments at all, and every probe dies in setup.
-
-    `owners`, if given, is filled with the class each name took its __init__
-    from -- itself, or the ancestor the walk below landed on. The caller needs
-    it to tell whose constructor a commit actually changed."""
+    with no arguments at all, and every probe dies in setup."""
     own, bases = {}, {}
     for src in srcs:
         try:
@@ -227,8 +223,6 @@ def _ctor_map(srcs, owners: dict | None = None) -> dict[str, list]:
             if init is not None:
                 own[n.name] = None if _bad_sig(init) else [
                     (name, _expand(ann, al)) for name, ann in _sig_params(init, True)]
-                if owners is not None:
-                    owners[n.name] = n.name
     out = dict(own)
     for cls in bases:
         cur, seen = cls, set()
@@ -239,8 +233,6 @@ def _ctor_map(srcs, owners: dict | None = None) -> dict[str, list]:
                 break
             if cur in own:
                 out[cls] = own[cur]
-                if owners is not None:
-                    owners[cls] = cur
     return {k: v for k, v in out.items() if v is not None}
 
 
@@ -862,9 +854,8 @@ def changed_functions(repo, base, head, include_tests: bool = False) -> list[Cha
         # consumes its type -- a false positive machine. Anything present in
         # base and absent from `moved` is identical in both.
         sibs = _siblings(repo, base, f, tree_cache)
-        owners: dict[str, str] = {}
         pkg = [b] + [x for x in sibs if x != b]
-        ctors = _ctor_map(pkg, owners)
+        ctors = _ctor_map(pkg)
         subs = _subclasses(pkg)
 
         # Extracting a helper leaves its callers byte-identical while their
@@ -969,7 +960,10 @@ def changed_functions(repo, base, head, include_tests: bool = False) -> list[Cha
             # because the methods it did not touch are never probed. Measured on
             # the 41 click commits where the class's own __init__ moved: 592
             # callables checked becomes 701, 247 unbuildable becomes 104, and
-            # the two findings it adds are both real.
+            # the two findings it adds are both real. The same guard stood on
+            # the fallback below for a subclass's constructions, and came off
+            # for the same reason: another 30 callables checked, 29 fewer
+            # unbuildable, five more findings, all correct.
             cls = qual.split(".")[0] if "." in qual else ""
             if cls:
                 ch.built = list(tcalls.get(cls, []))
@@ -977,11 +971,14 @@ def changed_functions(repo, base, head, include_tests: bool = False) -> list[Cha
                 # Nothing builds an abstract base. Take a construction of one of
                 # its subclasses: the method under test is the one it inherits,
                 # unless the subclass overrides it, and then no moved line is
-                # reached and the sweep reports that instead.
+                # reached and the sweep reports that instead. A subclass whose
+                # own __init__ moved is as usable as any other, for the reason
+                # above -- `Parameter.value_is_missing` is reachable only
+                # through an `Option`, and on b64ea071 it is the one that
+                # stopped calling None missing.
                 for sub in subs.get(cls, []):
-                    if f"{owners.get(sub, sub)}.__init__" not in moved:
-                        ch.built += [e for e in tcalls.get(sub, [])
-                                     if e not in ch.built]
+                    ch.built += [e for e in tcalls.get(sub, [])
+                                 if e not in ch.built]
             out.append(ch)
     return out
 

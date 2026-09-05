@@ -703,27 +703,18 @@ def main():
     except KeyError:
         pass
 
-    # A class takes its __init__ from the ancestor that defines it, and that is
-    # the only constructor whose change can invalidate the constructions the
-    # test suite performs for it. The disqualifying test used to ask `moved` for
-    # a bare "__init__", and `moved` carries the tail of every changed method
-    # alongside its qualified name -- so one touched constructor anywhere took
-    # the harvested constructions away from every class in the package.
-    owners = {}
-    _ctor_map(["""
+    # A class takes its __init__ from the ancestor that defines it. TimestampSigner
+    # is built with Signer's parameters or it is built with none at all, and then
+    # every probe on it dies in setup.
+    ctors = _ctor_map(["""
 class Signer:
     def __init__(self, key): pass
 class Timed(Signer): pass
 class Other:
     def __init__(self, n): pass
-"""], owners)
-    assert owners["Signer"] == "Signer", owners
-    assert owners["Timed"] == "Signer", "an inherited __init__ names its definer"
-    assert owners["Other"] == "Other", owners
-    moved = {"Signer.__init__", "__init__"}
-    kept = [c for c in ("Signer", "Timed", "Other")
-            if f"{owners.get(c, c)}.__init__" not in moved]
-    assert kept == ["Other"], f"the wrong classes were disqualified: {kept}"
+"""])
+    assert [n for n, _ in ctors["Timed"]] == ["key"], ctors["Timed"]
+    assert [n for n, _ in ctors["Other"]] == ["n"], ctors["Other"]
 
     # A hunk names lines in a file, and a callable is asked whether a probe ran
     # one of its own. Probing a method builds the instance first, so a commit
