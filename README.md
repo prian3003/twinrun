@@ -221,8 +221,8 @@ Exits 1 when there is a finding, 2 on a usage error, so it drops into CI as-is.
    the instance first, and a commit that touches `__init__` alongside a method
    had every method on the class reporting coverage of an edit its own body
    never ran. Across the 53 non-merge itsdangerous commits since 2019 that
-   touch the package — 29 of which leave anything executable to run — 3554 of
-   4993 probes reach it; the rest run the function around the edit. A callable
+   touch the package — 29 of which leave anything executable to run — 3549 of
+   4987 probes reach it; the rest run the function around the edit. A callable
    that nothing reached and that produced no delta is reported as skipped
    rather than counted as checked: 12 of the 39 skips on that sweep, against
    202 callables checked. A delta overrides the reach test: a moved
@@ -402,8 +402,8 @@ passed over rather than reported.
 ### Asking for an input twinrun cannot build
 
 Every value it probes with comes from an annotation, a guard literal, or a
-construction lifted out of the test suite, and on click that leaves 520
-callables unprobed: 213 where nothing could be built at all, and 307 where
+construction lifted out of the test suite, and on click that leaves 493
+callables unprobed: 184 where nothing could be built at all, and 309 where
 something was built and no probe ran a line the commit moved. Both are one
 failure -- a type the corpus does not model, or a value too specific to guess
 -- and it is the largest single thing standing between the tool and the rest of
@@ -531,15 +531,19 @@ runs it against itsdangerous on every push, so a change here that stops the
 tool catching `f513b48d` fails the build.
 
 What a framework costs is worth stating plainly. Across the 509 click commits
-since 2019 that touch `src/click`, the tool checks 1594 callables and lands
-19723 of 46936 probes on a changed line. It skips 213 callables because it
-could not build an input at all, and 307 because every probe ran without
+since 2019 that touch `src/click`, the tool checks 1628 callables and lands
+20320 of 47557 probes on a changed line. It skips 184 callables because it
+could not build an input at all, and 309 because every probe ran without
 reaching the change. That first number was 352 until a rule came out: a commit
 touching a class's `__init__` used to take the test suite's constructions away
 from every method on it, on the theory that the same call now builds a
 different object and would report the constructor's change once per method. The
 radius makes that impossible — it holds the methods the commit touched, so a
-moved `__init__` reaches only the methods that moved with it. What is left is
+moved `__init__` reaches only the methods that moved with it. The same rule
+stood a second time, over whether an abstract base could borrow a construction
+from a subclass whose constructor had moved, and came off for the same reason:
+`Parameter.value_is_missing` is reachable only through an `Option`, and it is
+one of the methods that stopped calling `None` missing. What is left is
 the genuinely hard part: click's world is `Context`, `Command`, `Option` and
 `Parameter`, each wanting another of its own kind, and two levels of
 constructor synthesis is not the whole of it — a third was measured and moved
