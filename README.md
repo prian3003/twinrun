@@ -116,19 +116,19 @@ write the regression down as the answer.
 
 ```mermaid
 flowchart TD
-    D["git diff<br/>base .. head"] --> R["1 · Blast radius<br/><i>callables whose AST moved,<br/>plus one level of callers</i>"]
-    R --> S["2 · Signatures<br/><i>asked of the interpreter,<br/>in each worktree</i>"]
-    S --> P["3 · Producers<br/><i>a call that yields the type<br/>a corpus cannot build</i>"]
-    P --> B["4 · Probes<br/><i>one input column per parameter</i>"]
+    D["git diff<br/>base .. head"] --> R["1 · Blast radius<br/>callables whose AST moved,<br/>plus one level of callers"]
+    R --> S["2 · Signatures<br/>asked of the interpreter,<br/>in each worktree"]
+    S --> P["3 · Producers<br/>a call that yields the type<br/>a corpus cannot build"]
+    P --> B["4 · Probes<br/>one input column per parameter"]
 
     B --> W1["5 · base worktree<br/>subprocess"]
     B --> W2["5 · head worktree<br/>subprocess"]
-    W1 --> N["6 · Normalise<br/><i>paths, addresses, tmp names</i>"]
+    W1 --> N["6 · Normalise<br/>paths, addresses, tmp names"]
     W2 --> N
 
-    N --> F["7 · Flake filter<br/><i>each probe twice per side</i>"]
-    F --> C["8 · Contract<br/><i>a delta the old code refused<br/>is not a delta</i>"]
-    C --> G["9 · Cluster<br/><i>one root cause, one finding</i>"]
+    N --> F["7 · Flake filter<br/>each probe twice per side"]
+    F --> C["8 · Contract<br/>a delta the old code refused<br/>is not a delta"]
+    C --> G["9 · Cluster<br/>one root cause, one finding"]
     G --> O(["report · exit 1 on a finding"])
 
     classDef run fill:#0B6E77,stroke:#0B6E77,color:#fff
