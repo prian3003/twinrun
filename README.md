@@ -591,6 +591,31 @@ nothing. Of the seven that ran, five are reported:
 runs it against itsdangerous on every push, so a change here that stops the
 tool catching `f513b48d` fails the build.
 
+### A repository it was not built against
+
+Everything above is Pallets: four repositories, one author, one house style.
+The first sweep outside that family was rich — 197 commits since 2024 touching
+`rich/`, 152 callables checked, 30 findings across 17 commits, 232 skips.
+
+It charged a bug on the way in. `Console._caller_frame_info` hands back a
+frame's globals, and a value past 2000 characters used to be truncated with its
+own length appended, so two namespaces sharing a visible prefix differed by a
+byte count — in the region the report does not print. Fixed: the marker no
+longer carries a length, at the price of missing a real difference past the
+cap. Four repositories of the same family had never produced that.
+
+After it, all thirty are true differences. Six are worth little: an attribute
+the commit itself added, a module that stopped importing `inspect`. Three are
+worth the sweep, and two of those are crashes a commit introduced.
+
+| commit | subject | what twinrun says |
+|---|---|---|
+| `7001a52a` | move to cells.py | `chop_cells("auto", 0)` returned `['', 'a', 'u', 't', 'o']` and now raises `ValueError: range() arg 3 must not be zero` |
+| `70d8f9ad` | permit nested live | `Console().clear_live()` returned `None` and now raises `IndexError: pop from empty list` — the new `_live_stack` is popped without being checked |
+| `69cee6e1` | preserve newlines | `AnsiDecoder().decode("")` yielded nothing and now yields one empty `Text`, because `"".splitlines()` is `[]` and `re.split(r"(?<=\n)", "")` is `[""]` |
+
+A commit whose subject is *move to cells.py* is the case this exists for.
+
 What a framework costs is worth stating plainly. Across the 509 click commits
 since 2019 that touch `src/click`, the tool checks 1628 callables and lands
 20320 of 47557 probes on a changed line. It skips 184 callables because it
